@@ -28,28 +28,31 @@ For now, the app manifest has to be set in xous-core by running this command in 
 
 `cargo xtask app-image sigchat`
 
-This is just a matter of creating the manifest entry in the `gam`, if this flow generally works this will be worked around with a better solution.
+Note: this will fail. That is fine. This is just a matter of creating the manifest entry in the `gam`. 
+TODO: modify `dummy-template` to do the same thing without failing to avoid confustion. 
 
 ### Out of Tree Sigchat build
 
-In the `sigchat` tree, run this command:
-
-`cargo build --release --target riscv32imac-unknown-xous-elf`
+In the `sigchat` tree, build the binary:
+- For hosted: `cargo build --release`
+- For renode/hardware: `cargo build --release --target riscv32imac-unknown-xous-elf`
 
 Note that you will need to have a GCC compiler installed to build the `ring` stuff.
 
-When this completes, you should have the ELF executable in `target/riscv32imac-unknown-xous-elf/release/sigchat`
+When this completes, you should have the ELF executable in `target/release/sigchat` for hosted or `target/riscv32imac-unknown-xous-elf/release/sigchat` for renode/hardware
 
 ### Create a Disk Image
 
-Back in the `xous-core` tree, run this command:
+Back in the `xous-core` tree, finish linking in the binary:
 
-`cargo xtask app-image ../sigchat/target/riscv32imac-unknown-xous-elf/release/sigchat`
+- For hosted: `cargo xtask run sigchat:../sigchat/release/sigchat`
+- For renode/hardware: `cargo xtask app-image sigchat:../sigchat/target/riscv32imac-unknown-xous-elf/release/sigchat`
+
+Note: for development you may want to clean a copy of the pddb each time you run the app which can be done by running
+
+`cp tools/pddb-images/hosted_backup.bin tools/pddb-images/hosted.bin` 
 
 This should pull the `sigchat` ELF into the disk image, and attempt to launch it.
-
-I *think* because of the bodge on the app manifest, it may fail to launch because the `app-image` command would reconfigure the system to not have the `sigchat` context anymore. But if you can get to this point, I'll fix that...
-
 
 ## Prerequisites:
 

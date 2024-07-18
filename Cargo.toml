@@ -3,15 +3,15 @@ name = "sigchat"
 version = "0.1.0"
 authors = ["john <john@nhoj.info>"]
 edition = "2018"
-description = "Matrix chat"
+description = "sigchat"
 
 # Dependency versions enforced by Cargo.lock.
 [dependencies]
 log = "0.4.14"
 num-derive = { version = "0.3.3", default-features = false}
 num-traits = { version = "0.2.14", default-features = false}
-xous = "0.9.52"
-xous-ipc = "0.9.52"
+xous = "0.9.56"
+xous-ipc = "0.9.56"
 log-server = { package = "xous-api-log", version = "0.1.48" }
 ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.48" }
 xous-names = { package = "xous-api-names", version = "0.9.50" }
@@ -33,19 +33,24 @@ chat = { path = "../xous-core/libs/chat" }
 modals = { path = "../xous-core/services/modals" }
 percent-encoding = "2.2"
 rkyv = {version = "0.4.3", default-features = false, features = ["const_generics"]}
-rustls = { version = "0.21.7", features = ["dangerous_configuration"] }
 serde = { version = "1.0", features = [ "derive" ] }
 tls = { path = "../xous-core/libs/tls" }
 tungstenite = "0.21.0"
-ureq = { version = "2.7.1", features = ["json"] }
 url = "2.2.2"
+ring = {version = "=0.17.8"} #must be pinned since we patch in a version
+# must be manually specified as they have our pinned version of ring as a transitive dep.
+ureq = { version = "=2.9.4", features = ["json"] }
+rustls = { version = "=0.22.2"} 
+rustls-webpki = { version = "=0.102.1"}
+sct = { version = "=0.7.1" }
 
 [features]
 default = []
 
 # prefer hardware-accelerated versions of services
-[patch.crates-io.sha2]
-path = "../xous-core/services/engine-sha512"
+[patch.crates-io]
+sha2 = { git = "https://github.com/betrusted-io/hashes.git", branch = "sha2-v0.10.8-xous" }
+sha2_legacy = { git = "https://github.com/RustCrypto/hashes.git", tag = "sha2-v0.9.9", package = "sha2" }
 
 [patch.crates-io.aes]
 path = "../xous-core/services/aes"
@@ -56,8 +61,8 @@ branch="main"
 #path = "../curve25519-dalek"  # when doing local dev work
 # feature overrides are specified at the crate level
 
-[patch."https://github.com/betrusted-io/xous-engine-25519.git"]
-engine-25519 = {path = "../xous-core/services/engine-25519"}
+#[patch."https://github.com/betrusted-io/xous-engine-25519.git"]
+#engine-25519 = {path = "../xous-core/services/engine-25519"}
 
 [patch.crates-io.usb-device]
 git="https://github.com/betrusted-io/usb-device.git"
@@ -68,10 +73,10 @@ branch="main"
 [patch.crates-io.getrandom]
 path = "../xous-core/imports/getrandom"
 
-[patch.crates-io.ring]
+#[patch.crates-io.ring]
 # path = "../ring-xous"  # for local dev only
-git="https://github.com/betrusted-io/ring-xous"
-rev="4296c2e7904898766cf7d8d589759a129794783b" # use the commitref because we're still updating the branch
+#git="https://github.com/betrusted-io/ring-xous"
+#rev="4296c2e7904898766cf7d8d589759a129794783b" # use the commitref because we're still updating the branch
 
 #[patch.crates-io.utralib]
 #path = "../xous-core/utralib"
