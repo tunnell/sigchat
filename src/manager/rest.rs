@@ -176,11 +176,26 @@ fn try_put(
         log::error!("JSON body serialize failed: {e}");
         Error::new(ErrorKind::Other, "failed to serialize link body")
     })?;
-    log::info!(
-        "link request body (verificationCode redacted, len={}): {}",
-        json.len(),
-        redact_verification_code(&json)
-    );
+    // The Xous log-server truncates huge log lines; dump the redacted body
+    // to a file on hosted so 422 post-mortems can see the full payload.
+    let redacted = redact_verification_code(&json);
+    #[cfg(feature = "hosted")]
+    {
+        use std::io::Write as _;
+        let path = "/tmp/sigchat-link-body.json";
+        match std::fs::File::create(path) {
+            Ok(mut f) => match f.write_all(redacted.as_bytes()) {
+                Ok(()) => log::info!("link request body dumped to {path} (len={})", json.len()),
+                Err(e) => log::warn!("body file write failed: {e}"),
+            },
+            Err(e) => log::warn!("body file create failed: {e}"),
+        }
+    }
+    #[cfg(not(feature = "hosted"))]
+    {
+        let _ = &redacted; // file dump is hosted-only for now
+        log::info!("link request body len={}", json.len());
+    }
 
     let resp = agent
         .put(url)
@@ -205,6 +220,15 @@ fn try_put(
         Err(ureq::Error::Status(code, r)) => {
             let body_text = r.into_string().unwrap_or_default();
             let preview: String = body_text.chars().take(200).collect();
+            #[cfg(feature = "hosted")]
+            {
+                use std::io::Write as _;
+                let err_path = "/tmp/sigchat-link-error-body.txt";
+                if let Ok(mut f) = std::fs::File::create(err_path) {
+                    let _ = f.write_all(body_text.as_bytes());
+                    log::info!("server {code} error body dumped to {err_path} (len={})", body_text.len());
+                }
+            }
             let kind = match code {
                 403 => {
                     log::error!(
