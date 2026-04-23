@@ -62,7 +62,7 @@ fn wrapped_main() -> ! {
 
     let cid = xous::connect(sid).unwrap();
     chat.menu_add(MenuItem {
-        name: xous_ipc::String::from_str(t!("sigchat.menu.close", locales::LANG)),
+        name: t!("sigchat.menu.close", locales::LANG).to_string(),
         action_conn: Some(cid),
         action_opcode: SigchatOp::Menu as u32,
         action_payload: MenuPayload::Scalar([MenuOp::Noop as u32, 0, 0, 0]),
