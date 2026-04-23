@@ -163,7 +163,13 @@ impl Manager {
                 let result = match ws.read(Some(Duration::from_millis(5000))) {
                     Ok(Message::Binary(uuid)) => {
                         log::info!("received Provisioning UUID message from host");
-                        let uuid = libsignal::ProvisioningUuid::decode(uuid).id.clone();
+                        let uuid = match libsignal::ProvisioningUuid::decode(uuid) {
+                            Ok(pu) => pu.id,
+                            Err(e) => {
+                                log::error!("failed to decode ProvisioningUuid: {e}");
+                                return Err(link_err);
+                            }
+                        };
                         let identity_key_pair = libsignal::generate_identity_key_pair();
                         let pub_key = identity_key_pair.djb_identity_key.key.clone();
                         match url::Url::parse_with_params(
@@ -172,29 +178,48 @@ impl Manager {
                         ) {
                             Ok(device_link_uri) => {
                                 log::info!("device_link_uri: {device_link_uri}");
-                                let xns = xous_names::XousNames::new().unwrap();
-                                let modals =
-                                    Modals::new(&xns).expect("can't connect to Modals server");
-                                modals
-                                    .show_notification(
-                                        t!("sigchat.account.link.scan", locales::LANG),
-                                        Some(device_link_uri.as_str()),
-                                    )
-                                    .expect("qrcode failed");
+                                let xns = match xous_names::XousNames::new() {
+                                    Ok(xns) => xns,
+                                    Err(e) => {
+                                        log::error!("failed to connect to XousNames: {e:?}");
+                                        return Err(link_err);
+                                    }
+                                };
+                                let modals = match Modals::new(&xns) {
+                                    Ok(m) => m,
+                                    Err(e) => {
+                                        log::error!("failed to connect to Modals: {e:?}");
+                                        return Err(link_err);
+                                    }
+                                };
+                                if let Err(e) = modals.show_notification(
+                                    t!("sigchat.account.link.scan", locales::LANG),
+                                    Some(device_link_uri.as_str()),
+                                ) {
+                                    log::error!("QR modal failed: {e:?}");
+                                    return Err(link_err);
+                                }
                                 match ws.read(Some(Duration::from_millis(5000))) {
                                     Ok(Message::Binary(registration)) => {
                                         log::info!("Registration message received from host");
-                                        match self.account.link(
-                                            name,
-                                            libsignal::ProvisionMessage::decode(
-                                                identity_key_pair,
-                                                registration,
-                                            ),
+                                        match libsignal::ProvisionMessage::decode(
+                                            identity_key_pair,
+                                            registration,
                                         ) {
-                                            Ok(result) => Ok(result),
+                                            Ok(provision_msg) => {
+                                                match self.account.link(name, provision_msg) {
+                                                    Ok(result) => Ok(result),
+                                                    Err(e) => {
+                                                        log::warn!("linking error: {e}");
+                                                        Ok(false)
+                                                    }
+                                                }
+                                            }
                                             Err(e) => {
-                                                log::warn!("linking error: {e}");
-                                                Ok(false)
+                                                log::error!(
+                                                    "failed to decrypt ProvisionMessage: {e}"
+                                                );
+                                                Err(link_err)
                                             }
                                         }
                                     }
@@ -209,7 +234,7 @@ impl Manager {
                                 }
                             }
                             Err(e) => {
-                                log::info!("{}", format!("{e}"));
+                                log::info!("{e}");
                                 Err(link_err)
                             }
                         }

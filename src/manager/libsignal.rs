@@ -1,57 +1,80 @@
-// this is a stub for a wrapped libsignal
+// Real libsignal-protocol integration for the device-link provisioning flow.
+// Replaces the previous stub implementation.
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+#![deny(clippy::panic)]
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+use hkdf::Hkdf;
+use hmac::Mac as _;
+use libsignal_protocol::{IdentityKeyPair as LibIdentityKeyPair, PrivateKey, PublicKey};
+use prost::Message as _;
+use rand::TryRngCore as _;
+use rand::rngs::OsRng;
+use sha2::Sha256;
+use std::io::{Error, ErrorKind};
 
-// use org.whispersystems.signalservice.api.push.SignalServiceAddress;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+type HmacSha256 = hmac::Hmac<Sha256>;
+
+// ─── Internal protobuf types ──────────────────────────────────────────────────
+// Inline prost definitions; no separate .proto build step needed.
+
+#[derive(prost::Message)]
+struct ProvisioningAddressProto {
+    // Signal uses the name "address" in newer protos; wire-compatible with
+    // the older "uuid" field (same field number 1, same type string).
+    #[prost(string, optional, tag = "1")]
+    address: Option<String>,
+}
+
+#[derive(prost::Message)]
+struct ProvisionEnvelopeProto {
+    #[prost(bytes = "vec", optional, tag = "1")]
+    public_key: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    body: Option<Vec<u8>>,
+}
+
+#[derive(prost::Message)]
+struct ProvisionMessageProto {
+    #[prost(bytes = "vec", optional, tag = "1")]
+    aci_identity_key_public: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    aci_identity_key_private: Option<Vec<u8>>,
+    #[prost(string, optional, tag = "3")]
+    number: Option<String>,
+    #[prost(bytes = "vec", optional, tag = "6")]
+    profile_key: Option<Vec<u8>>,
+    #[prost(string, optional, tag = "8")]
+    aci: Option<String>,
+    #[prost(string, optional, tag = "10")]
+    pni: Option<String>,
+    #[prost(bytes = "vec", optional, tag = "11")]
+    pni_identity_key_public: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "12")]
+    pni_identity_key_private: Option<Vec<u8>>,
+}
+
+// ─── Public types (consumed by manager.rs and account.rs) ────────────────────
+
 pub struct SignalServiceAddress {}
 impl SignalServiceAddress {
     pub const DEFAULT_DEVICE_ID: u32 = 0;
 }
 
-////////////////////////////////////////////////////////
-
-// use org.whispersystems.signalservice.api.util.DeviceNameUtil;
-pub struct DeviceNameUtil {}
-impl DeviceNameUtil {
-    pub fn encrypt_device_name(_device_name: &str, _aci_private_key: IdentityKey) -> String {
-        "STUB".to_string()
-    }
+pub struct IdentityKey {
+    /// URL-safe no-pad base64 of the serialized key bytes.
+    /// Public keys: 33 bytes (0x05 type prefix + 32-byte X25519 key).
+    /// Private keys: 32 bytes raw Curve25519 scalar.
+    pub key: String,
 }
 
-////////////////////////////////////////////////////////
-
-// use org.whispersystems.signalservice.internal.crypto.PrimaryProvisioningCipher;
-pub struct PrimaryProvisioningCipher {}
-impl PrimaryProvisioningCipher {
-    pub fn new(_stub: Option<String>) -> PrimaryProvisioningCipher {
-        PrimaryProvisioningCipher {}
-    }
-    pub fn decrypt(&self, _temp_identity: IdentityKeyPair, bytes: Vec<u8>) -> ProvisionMessage {
-        //log::info!("temp_identity: {:?}", temp_identity);
-        log::info!("raw uuid Protocol Buffer: {:?}", bytes);
-        ProvisionMessage {
-            number: "STUB number".to_string(),
-            aci: IdentityKeyPair {
-                service_id: "STUB".to_string(),
-                djb_identity_key: IdentityKey {
-                    key: "STUB".to_string(),
-                },
-                djb_private_key: IdentityKey {
-                    key: "STUB".to_string(),
-                },
-            },
-            pni: IdentityKeyPair {
-                service_id: "STUB".to_string(),
-                djb_identity_key: IdentityKey {
-                    key: "STUB".to_string(),
-                },
-                djb_private_key: IdentityKey {
-                    key: "STUB".to_string(),
-                },
-            },
-            master_key: "STUB number".to_string(),
-            profile_key: Some("STUB number".to_string()),
-        }
-    }
+pub struct IdentityKeyPair {
+    pub service_id: String,
+    pub djb_identity_key: IdentityKey,
+    pub djb_private_key: IdentityKey,
 }
 
 pub struct ProvisionMessage {
@@ -61,87 +84,221 @@ pub struct ProvisionMessage {
     pub master_key: String,
     pub profile_key: Option<String>,
 }
-impl ProvisionMessage {
-    pub fn decode(temp_identity: IdentityKeyPair, bytes: Vec<u8>) -> ProvisionMessage {
-        let primary_provisioning_cipher = PrimaryProvisioningCipher::new(None);
-        primary_provisioning_cipher.decrypt(temp_identity, bytes)
-    }
-}
 
-////////////////////////////////////////////////////////
-
-// https://github.com/signalapp/Signal-Android/blob/d2053d2db7b1b930b7058ce5506dd6037ac3b808/libsignal-service/src/main/protowire/Provisioning.proto#L13C9-L15
-//
-// message ProvisioningUuid {
-//   optional string uuid = 1;
-// }
 pub struct ProvisioningUuid {
     pub id: String,
 }
+
+pub struct DeviceNameUtil {}
+impl DeviceNameUtil {
+    pub fn encrypt_device_name(_device_name: &str, _aci_private_key: IdentityKey) -> String {
+        // tracked in follow-up task: ECDH + HKDF + AES-CBC device-name cipher
+        "placeholder-device-name-encryption".to_string()
+    }
+}
+
+pub struct PrimaryProvisioningCipher {}
+impl PrimaryProvisioningCipher {
+    pub fn new(_unused: Option<String>) -> Self {
+        PrimaryProvisioningCipher {}
+    }
+
+    /// Decrypt a `ProvisionEnvelope` received over the provisioning WebSocket.
+    ///
+    /// Protocol (PrimaryProvisioningCipher.encrypt in Signal-Android):
+    ///   ephemeral_pub || 0x01 || IV(16) || AES-256-CBC(plaintext) || HMAC-SHA256(32)
+    /// where the HMAC covers the version byte + IV + ciphertext, and the
+    /// AES key and MAC key are derived via HKDF-SHA256 from the X25519 shared secret.
+    pub fn decrypt(
+        &self,
+        temp_identity: IdentityKeyPair,
+        bytes: Vec<u8>,
+    ) -> Result<ProvisionMessage, Error> {
+        // 1. Decode ProvisionEnvelope protobuf.
+        let envelope = ProvisionEnvelopeProto::decode(bytes.as_slice()).map_err(|e| {
+            log::error!("ProvisionEnvelope proto decode failed: {e}");
+            Error::new(ErrorKind::InvalidData, "failed to decode ProvisionEnvelope")
+        })?;
+
+        let ephemeral_pub_bytes = envelope.public_key.ok_or_else(|| {
+            log::error!("ProvisionEnvelope missing publicKey");
+            Error::new(ErrorKind::InvalidData, "missing publicKey in ProvisionEnvelope")
+        })?;
+
+        let body = envelope.body.ok_or_else(|| {
+            log::error!("ProvisionEnvelope missing body");
+            Error::new(ErrorKind::InvalidData, "missing body in ProvisionEnvelope")
+        })?;
+
+        // body: version(1) | IV(16) | ciphertext(≥16) | HMAC-SHA256(32)
+        // minimum: 1 + 16 + 16 + 32 = 65 bytes
+        if body.len() < 65 {
+            log::error!("ProvisionEnvelope body too short: {} bytes", body.len());
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "ProvisionEnvelope body too short",
+            ));
+        }
+        if body[0] != 0x01 {
+            log::error!("unexpected ProvisionEnvelope version byte: {:#04x}", body[0]);
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "unexpected ProvisionEnvelope version",
+            ));
+        }
+
+        // 2. Reconstruct our temporary private key from stored base64.
+        let priv_bytes = URL_SAFE_NO_PAD
+            .decode(&temp_identity.djb_private_key.key)
+            .map_err(|e| {
+                log::error!("base64-decode of temp private key failed: {e}");
+                Error::new(ErrorKind::InvalidData, "failed to decode temp private key")
+            })?;
+        let our_private_key = PrivateKey::deserialize(&priv_bytes).map_err(|e| {
+            log::error!("temp private key deserialize failed: {e:?}");
+            Error::new(ErrorKind::InvalidData, "invalid temp private key")
+        })?;
+
+        // 3. Parse primary's ephemeral public key from the envelope.
+        let their_pub_key = PublicKey::deserialize(&ephemeral_pub_bytes).map_err(|e| {
+            log::error!("ephemeral public key deserialize failed: {e:?}");
+            Error::new(ErrorKind::InvalidData, "invalid ephemeral public key")
+        })?;
+
+        // 4. ECDH.
+        let shared_secret = our_private_key
+            .calculate_agreement(&their_pub_key)
+            .map_err(|e| {
+                log::error!("ECDH failed: {e:?}");
+                Error::new(ErrorKind::InvalidData, "ECDH failed")
+            })?;
+
+        // 5. HKDF-SHA256: salt=none, IKM=shared_secret, info="TextSecure Provisioning Message".
+        //    Output: 64 bytes → [aes_key (0..32), mac_key (32..64)].
+        const HKDF_INFO: &[u8] = b"TextSecure Provisioning Message";
+        let hk = Hkdf::<Sha256>::new(None, &shared_secret);
+        let mut derived = [0u8; 64];
+        hk.expand(HKDF_INFO, &mut derived).map_err(|e| {
+            log::error!("HKDF expand failed: {e}");
+            Error::new(ErrorKind::InvalidData, "HKDF expand failed")
+        })?;
+        let (aes_key, mac_key) = derived.split_at(32);
+
+        // 6. Constant-time HMAC-SHA256 verification over version || IV || ciphertext.
+        let mac_input = &body[..body.len() - 32];
+        let mac_expected = &body[body.len() - 32..];
+        let mut mac = HmacSha256::new_from_slice(mac_key).map_err(|_| {
+            Error::new(ErrorKind::InvalidData, "HMAC key init failed")
+        })?;
+        mac.update(mac_input);
+        mac.verify_slice(mac_expected).map_err(|_| {
+            log::error!("ProvisionEnvelope HMAC-SHA256 verification failed");
+            Error::new(ErrorKind::InvalidData, "MAC verification failed")
+        })?;
+
+        // 7. AES-256-CBC-PKCS7 decrypt: IV = body[1..17], ciphertext = body[17..len-32].
+        let iv = &body[1..17];
+        let ciphertext = &body[17..body.len() - 32];
+        let mut decryptor =
+            Aes256CbcDec::new_from_slices(aes_key, iv).map_err(|_| {
+                Error::new(ErrorKind::InvalidData, "AES key/IV length error")
+            })?;
+        let plaintext = decryptor
+            .decrypt_padded_vec_mut::<Pkcs7>(ciphertext)
+            .map_err(|_| {
+                log::error!("AES-256-CBC-PKCS7 decryption failed");
+                Error::new(ErrorKind::InvalidData, "AES-CBC-PKCS7 decryption failed")
+            })?;
+
+        // 8. Decode ProvisionMessage protobuf.
+        let msg = ProvisionMessageProto::decode(plaintext.as_slice()).map_err(|e| {
+            log::error!("ProvisionMessage proto decode failed: {e}");
+            Error::new(ErrorKind::InvalidData, "failed to decode ProvisionMessage")
+        })?;
+
+        let aci_pub = msg.aci_identity_key_public.ok_or_else(|| {
+            log::error!("ProvisionMessage missing aciIdentityKeyPublic");
+            Error::new(ErrorKind::InvalidData, "missing aciIdentityKeyPublic")
+        })?;
+        let aci_priv = msg.aci_identity_key_private.ok_or_else(|| {
+            log::error!("ProvisionMessage missing aciIdentityKeyPrivate");
+            Error::new(ErrorKind::InvalidData, "missing aciIdentityKeyPrivate")
+        })?;
+        let pni_pub = msg.pni_identity_key_public.unwrap_or_default();
+        let pni_priv = msg.pni_identity_key_private.unwrap_or_default();
+
+        log::info!("ProvisionMessage decoded: number={:?}, aci={:?}",
+            msg.number, msg.aci);
+
+        Ok(ProvisionMessage {
+            number: msg.number.unwrap_or_default(),
+            aci: IdentityKeyPair {
+                service_id: msg.aci.unwrap_or_default(),
+                djb_identity_key: IdentityKey {
+                    key: URL_SAFE_NO_PAD.encode(&aci_pub),
+                },
+                djb_private_key: IdentityKey {
+                    key: URL_SAFE_NO_PAD.encode(&aci_priv),
+                },
+            },
+            pni: IdentityKeyPair {
+                service_id: msg.pni.unwrap_or_default(),
+                djb_identity_key: IdentityKey {
+                    key: URL_SAFE_NO_PAD.encode(&pni_pub),
+                },
+                djb_private_key: IdentityKey {
+                    key: URL_SAFE_NO_PAD.encode(&pni_priv),
+                },
+            },
+            master_key: String::new(), // field 13 is reserved/deprecated in Provisioning.proto
+            profile_key: msg.profile_key.map(|k| URL_SAFE_NO_PAD.encode(&k)),
+        })
+    }
+}
+
+impl ProvisionMessage {
+    pub fn decode(
+        temp_identity: IdentityKeyPair,
+        bytes: Vec<u8>,
+    ) -> Result<ProvisionMessage, Error> {
+        PrimaryProvisioningCipher::new(None).decrypt(temp_identity, bytes)
+    }
+}
+
 impl ProvisioningUuid {
-    pub fn decode(bytes: Vec<u8>) -> ProvisioningUuid {
-        log::info!("raw uuid Protocol Buffer: {:?}", bytes);
-        ProvisioningUuid {
-            id: "TODO decode uuid Protocol Buffer".to_string(),
-        }
+    /// Decode a ProvisioningAddress protobuf from the server.
+    /// Returns the opaque provisioning address string used as the QR URI uuid parameter.
+    pub fn decode(bytes: Vec<u8>) -> Result<ProvisioningUuid, Error> {
+        let proto = ProvisioningAddressProto::decode(bytes.as_slice()).map_err(|e| {
+            log::error!("ProvisioningAddress proto decode failed: {e}");
+            Error::new(ErrorKind::InvalidData, "failed to decode ProvisioningAddress")
+        })?;
+        let address = proto.address.ok_or_else(|| {
+            log::error!("ProvisioningAddress missing address field");
+            Error::new(ErrorKind::InvalidData, "missing address in ProvisioningAddress")
+        })?;
+        log::info!("decoded provisioning address: {:?}", address);
+        Ok(ProvisioningUuid { id: address })
     }
 }
 
-//////////////////////////////////////////////////////////
-
-// use org.signal.libsignal.protocol.IdentityKey;
-pub struct IdentityKey {
-    pub key: String,
-}
-impl IdentityKey {
-    pub fn new(key: String) -> Self {
-        IdentityKey { key }
-    }
-
-    pub fn clone(&self) -> IdentityKey {
-        IdentityKey::new(self.key.clone())
-    }
-}
-
-// use org.signal.libsignal.protocol.IdentityKeyPair;
-pub struct IdentityKeyPair {
-    pub service_id: String,
-    pub djb_identity_key: IdentityKey,
-    pub djb_private_key: IdentityKey,
-}
-
-// use org.signal.libsignal.protocol.ecc.Curve;
-pub struct Curve {}
-impl Curve {
-    pub fn generate_key_pair() -> DjbKeyPair {
-        DjbKeyPair {
-            djb_private_key: IdentityKey::new("STUB privateIdentityKey".to_string()),
-            djb_public_key: IdentityKey::new("STUB publicIdentityKey".to_string()),
-        }
-    }
-}
-
-pub struct DjbKeyPair {
-    djb_private_key: IdentityKey,
-    djb_public_key: IdentityKey,
-}
-impl DjbKeyPair {
-    pub fn get_private_key(&self) -> IdentityKey {
-        self.djb_private_key.clone()
-    }
-    pub fn get_public_key(&self) -> IdentityKey {
-        self.djb_public_key.clone()
-    }
-}
-
-// https://github.com/AsamK/signal-cli/blob/375bdb79485ec90beb9a154112821a4657740b7a/lib/src/main/java/org/asamk/signal/manager/util/KeyUtils.java#L45-L51
+/// Generate a temporary Curve25519 identity keypair for the device-link QR code.
+/// Uses OsRng which routes through the Xous TRNG on hardware or the OS on hosted.
+/// Returns the keypair with keys encoded as URL-safe no-pad base64 strings.
 pub fn generate_identity_key_pair() -> IdentityKeyPair {
-    let djb_key_pair = Curve::generate_key_pair();
-    let djb_identity_key = IdentityKey::new(djb_key_pair.get_public_key().key);
-    let djb_private_key = djb_key_pair.get_private_key();
+    // OsRng in rand 0.9 is a TryRngCore; .unwrap_err() wraps it into a
+    // panicking RngCore + CryptoRng, matching the pattern in libsignal's own tests.
+    let mut csprng = OsRng.unwrap_err();
+    let kp = LibIdentityKeyPair::generate(&mut csprng);
     IdentityKeyPair {
-        service_id: "STUB".to_string(),
-        djb_identity_key,
-        djb_private_key,
+        service_id: String::new(), // populated from ProvisionMessage after scan
+        djb_identity_key: IdentityKey {
+            // 33 bytes: 0x05 type prefix + 32-byte X25519 public key
+            key: URL_SAFE_NO_PAD.encode(kp.identity_key().serialize()),
+        },
+        djb_private_key: IdentityKey {
+            // 32 bytes raw Curve25519 scalar
+            key: URL_SAFE_NO_PAD.encode(kp.private_key().serialize()),
+        },
     }
 }
