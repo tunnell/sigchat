@@ -129,9 +129,19 @@ pub struct ProvisioningUuid {
 
 pub struct DeviceNameUtil {}
 impl DeviceNameUtil {
-    pub fn encrypt_device_name(_device_name: &str, _aci_private_key: IdentityKey) -> String {
-        // tracked in follow-up task: ECDH + HKDF + AES-CBC device-name cipher
-        "placeholder-device-name-encryption".to_string()
+    /// Temporary placeholder until the real DeviceNameCipher (ECDH + HKDF +
+    /// AES-CBC) is implemented. Returns the raw UTF-8 bytes of `device_name`
+    /// encoded as standard base64 with padding. The server treats this field
+    /// as an opaque base64-encoded byte array (`@Size(max=225) byte[] name`
+    /// in Signal-Server's DeviceAttributes record), so we MUST send valid
+    /// base64 — not a literal string — or Jackson returns 422. The server
+    /// stores the bytes unchanged; other linked devices are what eventually
+    /// decrypt them, so a non-encrypted placeholder simply appears in the
+    /// phone's "Linked Devices" list as whatever UTF-8 decoded from the
+    /// bytes.
+    pub fn encrypt_device_name(device_name: &str, _aci_private_key: IdentityKey) -> String {
+        use base64::engine::general_purpose::STANDARD;
+        STANDARD.encode(device_name.as_bytes())
     }
 }
 
