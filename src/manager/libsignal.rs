@@ -90,7 +90,10 @@ struct ProvisionMessageProto {
 
 pub struct SignalServiceAddress {}
 impl SignalServiceAddress {
-    pub const DEFAULT_DEVICE_ID: u32 = 0;
+    // Signal's convention: primary device is 1; linked (secondary) devices
+    // are assigned 2+ by the server. Reference: Signal-Android
+    // SignalServiceAddress.java L22.
+    pub const DEFAULT_DEVICE_ID: u32 = 1;
 }
 
 pub struct IdentityKey {
