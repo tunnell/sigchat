@@ -44,6 +44,11 @@ rustls = { version = "=0.22.2"}
 rustls-webpki = { version = "=0.102.1"}
 sct = { version = "=0.7.1" }
 
+# getrandom 0.3 is only used on the Xous target (for the custom backend symbol).
+# On hosted/linux the standard linux backend in getrandom is used instead.
+[target.'cfg(target_os = "xous")'.dependencies]
+getrandom = { version = "0.3", default-features = false }
+
 [features]
 default = []
 hosted = [
