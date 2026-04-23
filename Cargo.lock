@@ -27,6 +27,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aes-gcm"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
+dependencies = [
+ "aead",
+ "aes",
+ "cipher",
+ "ctr",
+ "ghash",
+ "subtle",
+]
+
+[[package]]
 name = "aes-gcm-siv"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3047,6 +3061,7 @@ name = "sigchat"
 version = "0.1.0"
 dependencies = [
  "aes",
+ "aes-gcm",
  "base64 0.22.1",
  "cbc",
  "chat",
@@ -3079,6 +3094,7 @@ dependencies = [
  "rustls-webpki",
  "sct",
  "serde",
+ "serde_json",
  "sha2",
  "tls",
  "trng",
