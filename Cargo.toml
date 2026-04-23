@@ -87,7 +87,7 @@ branch="main"
 #path = "../usb-device"
 
 [patch.crates-io.getrandom]
-path = "../xous-core/imports/getrandom"
+path = "imports/getrandom-02"
 
 #[patch.crates-io.ring]
 # path = "../ring-xous"  # for local dev only

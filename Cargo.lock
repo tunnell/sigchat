@@ -965,12 +965,11 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.12"
+version = "0.2.16"
 dependencies = [
  "cfg-if",
  "flatipc",
  "libc",
- "rkyv 0.8.16",
  "wasi",
  "xous",
  "xous-api-names",
