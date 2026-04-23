@@ -46,6 +46,22 @@ sct = { version = "=0.7.1" }
 
 [features]
 default = []
+hosted = [
+    # "gam/hosted" intentionally omitted — forwarding it causes an infinite
+    # register_ux lend_mut loop in hosted mode, indicating an IPC format
+    # mismatch between the hosted-mode gam client and the xtask-built server.
+    # See: betrusted-io/xous-core#TBD
+    "graphics-server/hosted",
+    "trng/hosted",
+    "ime-plugin-shell/hosted",
+    "codec/hosted",
+    "com/hosted",
+    "llio/hosted",
+    "net/hosted",
+    "pddb/hosted",
+    "modals/hosted",
+    "tls/hosted",
+]
 
 # prefer hardware-accelerated versions of services
 [patch.crates-io]
