@@ -2,6 +2,7 @@ mod config;
 mod group_permission;
 pub mod libsignal; // stub
 mod link_state;
+pub mod prekeys;
 mod signal_ws;
 mod trust_mode;
 
