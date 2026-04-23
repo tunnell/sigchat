@@ -312,6 +312,15 @@ impl Account {
 
         let aci_priv = decode_private_key(&aci.djb_private_key.key, "aci")?;
         let pni_priv = decode_private_key(&pni.djb_private_key.key, "pni")?;
+
+        // Diagnostic: check that the public key we derive from each private
+        // matches the public sent in the ProvisionMessage. If these diverge,
+        // the identity key chain is broken and our signatures will never
+        // verify against the server's stored identity key (422 from
+        // PreKeySignatureValidator).
+        log_identity_chain("aci", &aci_priv, &aci.djb_identity_key.key);
+        log_identity_chain("pni", &pni_priv, &pni.djb_identity_key.key);
+
         let generated = prekeys::generate_prekeys(&aci_priv, &pni_priv)?;
 
         let body = rest::LinkDeviceRequestBody::from_parts(verification_code, attrs, generated);
@@ -468,6 +477,24 @@ impl Account {
             },
             Err(e) => Err(e),
         }
+    }
+}
+
+fn log_identity_chain(label: &str, private_key: &PrivateKey, expected_pub_b64url: &str) {
+    match private_key.public_key() {
+        Ok(derived_pub) => {
+            let derived_b64 = URL_SAFE_NO_PAD.encode(derived_pub.serialize());
+            if derived_b64 == expected_pub_b64url {
+                log::info!(
+                    "{label} identity chain OK: derived pub matches ProvisionMessage pub"
+                );
+            } else {
+                log::error!(
+                    "{label} identity chain BROKEN: derived_pub={derived_b64}, provision_pub={expected_pub_b64url}"
+                );
+            }
+        }
+        Err(e) => log::error!("{label} public_key derivation failed: {e:?}"),
     }
 }
 
