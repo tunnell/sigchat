@@ -202,8 +202,60 @@ impl Manager {
                                     log::error!("QR modal failed: {e:?}");
                                     return Err(link_err);
                                 }
-                                match ws.read(Some(Duration::from_millis(5000))) {
-                                    Ok(Message::Binary(registration)) => {
+                                // After the QR modal closes we poll the WS for the Binary
+                                // ProvisionEnvelope. The server may first deliver Ping or
+                                // other control frames — swallow those and keep reading until
+                                // the real Binary arrives, or the 180s budget runs out.
+                                let deadline = std::time::Instant::now()
+                                    + Duration::from_secs(180);
+                                let read_result: Result<Vec<u8>, Error> = loop {
+                                    let remaining = deadline
+                                        .checked_duration_since(std::time::Instant::now())
+                                        .unwrap_or(Duration::from_millis(1));
+                                    match ws.read(Some(remaining)) {
+                                        Ok(Message::Binary(registration)) => {
+                                            break Ok(registration);
+                                        }
+                                        Ok(Message::Ping(_)) => {
+                                            log::info!("ws Ping; continuing to wait for ProvisionEnvelope");
+                                            continue;
+                                        }
+                                        Ok(Message::Pong(_)) => {
+                                            log::info!("ws Pong; continuing");
+                                            continue;
+                                        }
+                                        Ok(Message::Text(t)) => {
+                                            log::info!("ws Text ({} chars); continuing", t.len());
+                                            continue;
+                                        }
+                                        Ok(Message::Frame(_)) => {
+                                            log::info!("ws raw Frame; continuing");
+                                            continue;
+                                        }
+                                        Ok(Message::Close(c)) => {
+                                            log::warn!("ws Close before ProvisionEnvelope: {:?}", c);
+                                            break Err(Error::new(
+                                                ErrorKind::ConnectionAborted,
+                                                "provisioning ws closed by peer",
+                                            ));
+                                        }
+                                        Err(e) if e.kind() == ErrorKind::TimedOut => {
+                                            log::warn!(
+                                                "ws read deadline reached without ProvisionEnvelope"
+                                            );
+                                            break Err(Error::new(
+                                                ErrorKind::TimedOut,
+                                                "timeout waiting for ProvisionEnvelope",
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            log::warn!("ws read error: {e}");
+                                            break Err(e);
+                                        }
+                                    }
+                                };
+                                match read_result {
+                                    Ok(registration) => {
                                         log::info!("Registration message received from host");
                                         match libsignal::ProvisionMessage::decode(
                                             identity_key_pair,
@@ -226,14 +278,7 @@ impl Manager {
                                             }
                                         }
                                     }
-                                    Ok(_) => {
-                                        log::warn!("unexpected Provisioning msg");
-                                        Err(link_err)
-                                    }
-                                    Err(e) => {
-                                        log::warn!("{e}");
-                                        Err(link_err)
-                                    }
+                                    Err(_) => Err(link_err),
                                 }
                             }
                             Err(e) => {
