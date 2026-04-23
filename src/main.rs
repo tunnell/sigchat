@@ -83,9 +83,11 @@ fn wrapped_main() -> ! {
                     match FromPrimitive::from_usize(event_code) {
                         Some(Event::Focus) => {
                             if first_focus {
-                                first_focus = false;
                                 match sigchat.connect() {
-                                    Ok(true) => log::info!("connected to Signal Account"),
+                                    Ok(true) => {
+                                        first_focus = false;
+                                        log::info!("connected to Signal Account");
+                                    }
                                     Ok(false) => log::info!("not connected to Signal Account"),
                                     Err(e) => {
                                         log::warn!("error while connecting to Signal Account: {e}")
