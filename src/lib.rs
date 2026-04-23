@@ -366,13 +366,11 @@ impl<'a> SigChat<'a> {
             .alert_builder(t!("sigchat.number.title", locales::LANG));
         let builder = builder.field(Some(t!("sigchat.number", locales::LANG).to_string()), None);
         match builder.build() {
-            Ok(payloads) => match payloads.content()[0].content.as_str() {
-                Ok(number) => {
-                    log::info!("registration phone number = {:?}", number);
-                    Ok(number.to_string())
-                }
-                Err(e) => Err(Error::new(ErrorKind::InvalidData, e)),
-            },
+            Ok(payloads) => {
+                let number = payloads.content()[0].content.to_string();
+                log::info!("registration phone number = {:?}", number);
+                Ok(number)
+            }
             Err(_) => Err(Error::from(ErrorKind::ConnectionRefused)),
         }
     }
