@@ -41,8 +41,8 @@ impl<'a> SigChat<'a> {
         SigChat {
             chat: chat,
             manager: match Account::read(SIGCHAT_ACCOUNT) {
-                Ok(account) => Some(Manager::new(account, TrustMode::OnFirstUse)),
-                Err(_) => None,
+                Ok(account) if account.is_registered() => Some(Manager::new(account, TrustMode::OnFirstUse)),
+                _ => None,
             },
             netmgr: net::NetManager::new(),
             modals: modals,
@@ -65,8 +65,8 @@ impl<'a> SigChat<'a> {
             if self.manager.is_none() {
                 log::info!("Setting up Signal Account Manager");
                 let account = match Account::read(SIGCHAT_ACCOUNT) {
-                    Ok(account) => account,
-                    Err(_) => self.account_setup()?,
+                    Ok(account) if account.is_registered() => account,
+                    _ => self.account_setup()?,
                 };
                 self.chat
                     .set_status_text(t!("sigchat.status.connecting", locales::LANG));
