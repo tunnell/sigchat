@@ -67,8 +67,12 @@ struct ProvisionMessageProto {
     aci_identity_key_private: Option<Vec<u8>>,
     #[prost(string, optional, tag = "3")]
     number: Option<String>,
+    #[prost(string, optional, tag = "4")]
+    provisioning_code: Option<String>,
     #[prost(bytes = "vec", optional, tag = "6")]
     profile_key: Option<Vec<u8>>,
+    #[prost(bool, optional, tag = "7")]
+    read_receipts: Option<bool>,
     #[prost(string, optional, tag = "8")]
     aci: Option<String>,
     #[prost(string, optional, tag = "10")]
@@ -77,6 +81,9 @@ struct ProvisionMessageProto {
     pni_identity_key_public: Option<Vec<u8>>,
     #[prost(bytes = "vec", optional, tag = "12")]
     pni_identity_key_private: Option<Vec<u8>>,
+    // tag 13 is reserved (was masterKey, deprecated in favor of accountEntropyPool)
+    #[prost(string, optional, tag = "15")]
+    account_entropy_pool: Option<String>,
 }
 
 // ─── Public types (consumed by manager.rs and account.rs) ────────────────────
@@ -105,6 +112,12 @@ pub struct ProvisionMessage {
     pub pni: IdentityKeyPair,
     pub master_key: String,
     pub profile_key: Option<String>,
+    /// One-time `provisioningCode` from proto tag 4. Required by the
+    /// `PUT /v1/devices/link` REST call (`verificationCode` field).
+    pub provisioning_code: Option<String>,
+    /// `accountEntropyPool` from proto tag 15. Replaces deprecated tag 13
+    /// masterKey; master key derivation from AEP is a separate task.
+    pub account_entropy_pool: Option<String>,
 }
 
 pub struct ProvisioningUuid {
@@ -249,8 +262,13 @@ impl PrimaryProvisioningCipher {
         let pni_pub = msg.pni_identity_key_public.unwrap_or_default();
         let pni_priv = msg.pni_identity_key_private.unwrap_or_default();
 
-        log::info!("ProvisionMessage decoded: number={:?}, aci={:?}",
-            msg.number, msg.aci);
+        log::info!(
+            "ProvisionMessage decoded: number={:?}, aci={:?}, provisioning_code_present={}, aep_present={}",
+            msg.number,
+            msg.aci,
+            msg.provisioning_code.is_some(),
+            msg.account_entropy_pool.is_some(),
+        );
 
         Ok(ProvisionMessage {
             number: msg.number.unwrap_or_default(),
@@ -274,6 +292,8 @@ impl PrimaryProvisioningCipher {
             },
             master_key: String::new(), // field 13 is reserved/deprecated in Provisioning.proto
             profile_key: msg.profile_key.map(|k| URL_SAFE_NO_PAD.encode(&k)),
+            provisioning_code: msg.provisioning_code,
+            account_entropy_pool: msg.account_entropy_pool,
         })
     }
 }
