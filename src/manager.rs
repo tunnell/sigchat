@@ -1,3 +1,4 @@
+pub mod account_attrs;
 mod config;
 mod group_permission;
 pub mod libsignal; // stub
