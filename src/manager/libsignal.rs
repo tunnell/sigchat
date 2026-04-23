@@ -21,6 +21,28 @@ type HmacSha256 = hmac::Hmac<Sha256>;
 // ─── Internal protobuf types ──────────────────────────────────────────────────
 // Inline prost definitions; no separate .proto build step needed.
 
+// Signal sends all WebSocket messages wrapped in this envelope.
+// WebSocketProtos.proto: WebSocketMessage { Type type=1; WebSocketRequestMessage request=2; }
+#[derive(prost::Message)]
+struct WebSocketRequestMessageProto {
+    #[prost(string, optional, tag = "1")]
+    verb: Option<String>,
+    #[prost(string, optional, tag = "2")]
+    path: Option<String>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    body: Option<Vec<u8>>,
+    #[prost(uint64, optional, tag = "4")]
+    id: Option<u64>,
+}
+
+#[derive(prost::Message)]
+struct WebSocketMessageProto {
+    #[prost(int32, optional, tag = "1")]
+    r#type: Option<i32>,
+    #[prost(message, optional, tag = "2")]
+    request: Option<WebSocketRequestMessageProto>,
+}
+
 #[derive(prost::Message)]
 struct ProvisioningAddressProto {
     // Signal uses the name "address" in newer protos; wire-compatible with
@@ -261,15 +283,39 @@ impl ProvisionMessage {
         temp_identity: IdentityKeyPair,
         bytes: Vec<u8>,
     ) -> Result<ProvisionMessage, Error> {
-        PrimaryProvisioningCipher::new(None).decrypt(temp_identity, bytes)
+        // Unwrap the WebSocketMessage envelope before decrypting the ProvisionEnvelope body.
+        let ws = WebSocketMessageProto::decode(bytes.as_slice()).map_err(|e| {
+            log::error!("WebSocketMessage decode failed: {e}");
+            Error::new(ErrorKind::InvalidData, "failed to decode WebSocketMessage")
+        })?;
+        let body = ws
+            .request
+            .and_then(|r| r.body)
+            .ok_or_else(|| {
+                log::error!("WebSocketMessage missing request.body for ProvisionEnvelope");
+                Error::new(ErrorKind::InvalidData, "missing request.body")
+            })?;
+        PrimaryProvisioningCipher::new(None).decrypt(temp_identity, body)
     }
 }
 
 impl ProvisioningUuid {
-    /// Decode a ProvisioningAddress protobuf from the server.
+    /// Decode a ProvisioningAddress protobuf from a WebSocketMessage frame.
+    /// Signal wraps all provisioning messages in WebSocketMessage { type, request: { body } }.
     /// Returns the opaque provisioning address string used as the QR URI uuid parameter.
     pub fn decode(bytes: Vec<u8>) -> Result<ProvisioningUuid, Error> {
-        let proto = ProvisioningAddressProto::decode(bytes.as_slice()).map_err(|e| {
+        let ws = WebSocketMessageProto::decode(bytes.as_slice()).map_err(|e| {
+            log::error!("WebSocketMessage decode failed: {e}");
+            Error::new(ErrorKind::InvalidData, "failed to decode WebSocketMessage")
+        })?;
+        let body = ws
+            .request
+            .and_then(|r| r.body)
+            .ok_or_else(|| {
+                log::error!("WebSocketMessage missing request.body");
+                Error::new(ErrorKind::InvalidData, "missing request.body")
+            })?;
+        let proto = ProvisioningAddressProto::decode(body.as_slice()).map_err(|e| {
             log::error!("ProvisioningAddress proto decode failed: {e}");
             Error::new(ErrorKind::InvalidData, "failed to decode ProvisioningAddress")
         })?;
