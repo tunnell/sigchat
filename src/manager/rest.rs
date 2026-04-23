@@ -148,6 +148,24 @@ fn basic_auth_header(identifier: &str, password: &str) -> String {
     format!("Basic {}", STANDARD.encode(raw.as_bytes()))
 }
 
+/// Replace the JSON value of `verificationCode` with a short redaction so the
+/// single-use code does not leak into logs. Used only in the outgoing-body
+/// diagnostic log.
+fn redact_verification_code(json: &str) -> String {
+    let key = "\"verificationCode\":\"";
+    if let Some(start) = json.find(key) {
+        let vstart = start + key.len();
+        if let Some(rel_end) = json[vstart..].find('"') {
+            let mut out = String::with_capacity(json.len());
+            out.push_str(&json[..vstart]);
+            out.push_str("<redacted>");
+            out.push_str(&json[vstart + rel_end..]);
+            return out;
+        }
+    }
+    json.to_string()
+}
+
 fn try_put(
     agent: &ureq::Agent,
     url: &str,
@@ -158,7 +176,11 @@ fn try_put(
         log::error!("JSON body serialize failed: {e}");
         Error::new(ErrorKind::Other, "failed to serialize link body")
     })?;
-    log::info!("link request body length={} bytes", json.len());
+    log::info!(
+        "link request body (verificationCode redacted, len={}): {}",
+        json.len(),
+        redact_verification_code(&json)
+    );
 
     let resp = agent
         .put(url)
