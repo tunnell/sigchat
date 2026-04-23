@@ -4,6 +4,7 @@ mod group_permission;
 pub mod libsignal; // stub
 mod link_state;
 pub mod prekeys;
+pub mod rest;
 mod signal_ws;
 mod trust_mode;
 
