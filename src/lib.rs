@@ -1,6 +1,8 @@
 mod account;
 pub mod api;
 mod manager;
+#[cfg(target_os = "xous")]
+mod getrandom_xous;
 
 use crate::account::{Account, ServiceEnvironment, DEFAULT_HOST};
 use crate::manager::{Config, Manager, TrustMode};
