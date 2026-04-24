@@ -283,7 +283,7 @@ fn run_session(mut ws: SignalWS, local_addr: &ProtocolAddress, chat_cid: CID) {
                 }
             }
             Some(WS_TYPE_RESPONSE) => {}
-            other => log::debug!("main_ws: unhandled WsMessage type {other:?}"),
+            other => log::warn!("main_ws: unhandled WsMessage type {other:?}"),
         }
     }
 
@@ -312,7 +312,7 @@ fn handle_request(
         log::info!("main_ws: message queue drained");
         send_ack(ws, id, 200);
     } else {
-        log::debug!("main_ws: server request {verb} {path} (id={id})");
+        log::info!("main_ws: server request {verb} {path} (id={id})");
         send_ack(ws, id, 200);
     }
 }
@@ -355,7 +355,7 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
     let content = match envelope.content {
         Some(c) => c,
         None => {
-            log::debug!("main_ws: envelope type={env_type} has no content bytes");
+            log::warn!("main_ws: envelope type={env_type} has no content bytes — dropping");
             return;
         }
     };
@@ -448,7 +448,7 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
             }
         }
         other => {
-            log::debug!("main_ws: unhandled envelope type {other} from {}", remote_addr.name());
+            log::warn!("main_ws: dropped envelope type={other} from {} (no dispatcher for this type)", remote_addr.name());
             return;
         }
     };
@@ -472,7 +472,7 @@ fn deliver_content(plaintext: Vec<u8>, remote_addr: &ProtocolAddress, server_ts:
     } else if let Some(sync) = content.sync_message {
         deliver_sync_message(sync, server_ts, chat_cid)
     } else {
-        log::debug!("main_ws: Content from {} has no DataMessage or SyncMessage", remote_addr.name());
+        log::warn!("main_ws: Content from {} has no DataMessage or SyncMessage — dropping", remote_addr.name());
         false
     };
 
@@ -484,7 +484,7 @@ fn deliver_content(plaintext: Vec<u8>, remote_addr: &ProtocolAddress, server_ts:
 fn deliver_data_message(dm: DataMessageProto, author: &str, server_ts: u64, chat_cid: CID) -> bool {
     let body = dm.body.unwrap_or_default();
     if body.is_empty() {
-        log::debug!("main_ws: DataMessage with no body from {author} (attachment/reaction?)");
+        log::warn!("main_ws: DataMessage with no body from {author} (attachment/reaction?) — not delivered to UI");
         return false;
     }
     let ts = dm.timestamp.unwrap_or(server_ts);
@@ -497,7 +497,7 @@ fn deliver_sync_message(sync: SyncMessageProto, server_ts: u64, chat_cid: CID) -
     let sent = match sync.sent {
         Some(s) => s,
         None => {
-            log::debug!("main_ws: SyncMessage has no Sent sub-message (contacts/request/etc.)");
+            log::warn!("main_ws: SyncMessage has no Sent sub-message (contacts/request/etc.) — not delivered");
             return false;
         }
     };
@@ -506,7 +506,7 @@ fn deliver_sync_message(sync: SyncMessageProto, server_ts: u64, chat_cid: CID) -
     let dm = match sent.message {
         Some(m) => m,
         None => {
-            log::debug!("main_ws: SyncMessage.Sent has no DataMessage");
+            log::warn!("main_ws: SyncMessage.Sent has no DataMessage — not delivered");
             return false;
         }
     };
