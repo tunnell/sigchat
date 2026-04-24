@@ -246,20 +246,32 @@ fn run_session(mut ws: SignalWS, local_addr: &ProtocolAddress, chat_cid: CID) {
 
         // (2) Read next WebSocket frame (500ms timeout drives the cycle).
         let raw = match ws.read() {
-            Ok(Message::Binary(b)) => b,
-            Ok(Message::Ping(_)) => {
-                log::info!("main_ws: got server Ping");
+            Ok(Message::Binary(b)) => {
+                log::info!("main_ws: got Binary frame {} bytes", b.len());
+                b
+            }
+            Ok(Message::Text(t)) => {
+                log::warn!("main_ws: got TEXT frame (unexpected) len={} preview={:?}",
+                           t.len(), &t.chars().take(80).collect::<String>());
                 continue;
             }
-            Ok(Message::Pong(_)) => {
-                log::info!("main_ws: got server Pong");
+            Ok(Message::Ping(p)) => {
+                log::info!("main_ws: got server Ping ({} bytes)", p.len());
+                continue;
+            }
+            Ok(Message::Pong(p)) => {
+                log::info!("main_ws: got server Pong ({} bytes)", p.len());
                 continue;
             }
             Ok(Message::Close(c)) => {
                 log::info!("main_ws: server closed connection: {c:?}");
                 break;
             }
-            Ok(_) => continue,
+            Ok(other) => {
+                log::warn!("main_ws: got unhandled Message variant: {:?}",
+                           std::mem::discriminant(&other));
+                continue;
+            }
             Err(e) if is_timeout(&e) => continue,
             Err(e) => {
                 log::warn!("main_ws: read error: {e}");
