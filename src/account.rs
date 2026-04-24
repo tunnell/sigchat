@@ -415,6 +415,18 @@ impl Account {
         }
     }
 
+    pub fn aci_service_id(&self) -> Option<&str> {
+        self.aci_service_id.as_deref()
+    }
+
+    pub fn device_id(&self) -> u32 {
+        self.device_id
+    }
+
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+
     pub fn service_environment(&self) -> &ServiceEnvironment {
         &self.service_environment
     }
