@@ -7,7 +7,7 @@
 use crate::manager::account_attrs::AccountAttributes;
 use crate::manager::prekeys::{KyberPreKeyJson, Prekeys, SignedPreKeyJson};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::io::{Error, ErrorKind};
 use std::sync::Arc;
 use tls::Tls;
@@ -91,14 +91,8 @@ impl LinkDeviceRequestBody {
 pub struct LinkDeviceResponse {
     pub uuid: String,
     pub pni: String,
-    #[serde(rename = "deviceId", deserialize_with = "de_device_id_string")]
+    #[serde(rename = "deviceId")]
     pub device_id: u32,
-}
-
-/// Signal's server returns `deviceId` as a JSON string, not an integer.
-fn de_device_id_string<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
-    let s = String::deserialize(d)?;
-    s.parse::<u32>().map_err(serde::de::Error::custom)
 }
 
 /// PUT {base_url}/v1/devices/link with Basic auth.

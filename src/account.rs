@@ -301,7 +301,7 @@ impl Account {
         let encrypted_name = DeviceNameUtil::encrypt_device_name(
             device_name,
             IdentityKey { key: aci.djb_private_key.key.clone() },
-        );
+        )?;
 
         let attrs = account_attrs::build_account_attributes(
             encrypted_name.clone(),
@@ -454,6 +454,7 @@ impl Account {
                 ACI_IDENTITY_PUBLIC_KEY => Ok(self.aci_identity_public = owned_value),
                 ACI_SERVICE_ID_KEY => Ok(self.aci_service_id = owned_value),
                 DEVICE_ID_KEY => Ok(self.device_id = owned_value.unwrap().parse().unwrap()),
+                ENCRYPTED_DEVICE_NAME_KEY => Ok(self.encrypted_device_name = owned_value),
                 IS_MULTI_DEVICE_KEY => {
                     Ok(self.is_multi_device = owned_value.unwrap().parse().unwrap())
                 }

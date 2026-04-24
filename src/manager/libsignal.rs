@@ -59,6 +59,20 @@ struct ProvisionEnvelopeProto {
     body: Option<Vec<u8>>,
 }
 
+// DeviceName.proto (Signal-Android app/src/main/protowire/DeviceName.proto):
+//   optional bytes ephemeralPublic = 1;
+//   optional bytes syntheticIv     = 2;
+//   optional bytes ciphertext      = 3;
+#[derive(prost::Message)]
+struct DeviceNameProto {
+    #[prost(bytes = "vec", optional, tag = "1")]
+    ephemeral_public: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    synthetic_iv: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    ciphertext: Option<Vec<u8>>,
+}
+
 #[derive(prost::Message)]
 struct ProvisionMessageProto {
     #[prost(bytes = "vec", optional, tag = "1")]
@@ -129,20 +143,106 @@ pub struct ProvisioningUuid {
 
 pub struct DeviceNameUtil {}
 impl DeviceNameUtil {
-    /// Temporary placeholder until the real DeviceNameCipher (ECDH + HKDF +
-    /// AES-CBC) is implemented. Returns the raw UTF-8 bytes of `device_name`
-    /// encoded as standard base64 with padding. The server treats this field
-    /// as an opaque base64-encoded byte array (`@Size(max=225) byte[] name`
-    /// in Signal-Server's DeviceAttributes record), so we MUST send valid
-    /// base64 — not a literal string — or Jackson returns 422. The server
-    /// stores the bytes unchanged; other linked devices are what eventually
-    /// decrypt them, so a non-encrypted placeholder simply appears in the
-    /// phone's "Linked Devices" list as whatever UTF-8 decoded from the
-    /// bytes.
-    pub fn encrypt_device_name(device_name: &str, _aci_private_key: IdentityKey) -> String {
+    /// Encrypt a secondary-device name for Signal's `PUT /v1/devices/link`.
+    /// Mirrors Signal-Android's `DeviceNameCipher.encryptDeviceName` so that
+    /// the primary device can decrypt and display it:
+    ///   1. Generate ephemeral Curve25519 keypair.
+    ///   2. master_secret = ECDH(ephemeral_priv, ACI identity_pub).
+    ///   3. synthetic_iv  = HMAC-SHA256(HMAC-SHA256(master_secret, "auth"),  plaintext)[..16]
+    ///   4. cipher_key    = HMAC-SHA256(HMAC-SHA256(master_secret, "cipher"), synthetic_iv)
+    ///   5. ciphertext    = AES-256-CTR(cipher_key, iv=zeros, plaintext)
+    ///   6. Output: protobuf { ephemeralPublic, syntheticIv, ciphertext }, base64-encoded.
+    pub fn encrypt_device_name(
+        device_name: &str,
+        aci_identity_priv: IdentityKey,
+    ) -> Result<String, Error> {
         use base64::engine::general_purpose::STANDARD;
-        STANDARD.encode(device_name.as_bytes())
+
+        // Decode the ACI identity private key (URL-safe base64 no padding, 32-byte scalar).
+        let priv_bytes = URL_SAFE_NO_PAD
+            .decode(&aci_identity_priv.key)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, format!("identity priv b64: {e}")))?;
+        let identity_private = PrivateKey::deserialize(&priv_bytes).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, format!("identity priv deserialize: {e:?}"))
+        })?;
+        let identity_public = identity_private.public_key().map_err(|e| {
+            Error::other(format!("identity pub derivation: {e:?}"))
+        })?;
+
+        // 1. Ephemeral Curve25519 keypair + ECDH.
+        let mut rng = OsRng.unwrap_err();
+        let ephemeral = libsignal_protocol::KeyPair::generate(&mut rng);
+        let master_secret = ephemeral
+            .private_key
+            .calculate_agreement(&identity_public)
+            .map_err(|e| Error::other(format!("ECDH: {e:?}")))?;
+
+        // 2. synthetic_iv_key = HMAC-SHA256(master_secret, "auth")
+        let mut mac = HmacSha256::new_from_slice(&master_secret)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "HMAC key init (auth)"))?;
+        mac.update(b"auth");
+        let synthetic_iv_key = mac.finalize().into_bytes();
+
+        // 3. synthetic_iv = HMAC-SHA256(synthetic_iv_key, plaintext)[..16]
+        let mut mac = HmacSha256::new_from_slice(&synthetic_iv_key)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "HMAC key init (synth_iv)"))?;
+        mac.update(device_name.as_bytes());
+        let synthetic_iv_full = mac.finalize().into_bytes();
+        let mut synthetic_iv = [0u8; 16];
+        synthetic_iv.copy_from_slice(&synthetic_iv_full[..16]);
+
+        // 4. cipher_key_key = HMAC-SHA256(master_secret, "cipher")
+        let mut mac = HmacSha256::new_from_slice(&master_secret)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "HMAC key init (cipher)"))?;
+        mac.update(b"cipher");
+        let cipher_key_key = mac.finalize().into_bytes();
+
+        // 5. cipher_key = HMAC-SHA256(cipher_key_key, synthetic_iv)
+        let mut mac = HmacSha256::new_from_slice(&cipher_key_key)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "HMAC key init (cipher_key)"))?;
+        mac.update(&synthetic_iv);
+        let cipher_key = mac.finalize().into_bytes();
+
+        // 6. AES-256-CTR with zero IV.
+        let ciphertext = aes256_ctr_encrypt(cipher_key.as_slice(), device_name.as_bytes())?;
+
+        // 7. Proto-encode DeviceName.
+        let ephemeral_pub = ephemeral.public_key.serialize().to_vec(); // 33 bytes
+        let proto = DeviceNameProto {
+            ephemeral_public: Some(ephemeral_pub),
+            synthetic_iv: Some(synthetic_iv.to_vec()),
+            ciphertext: Some(ciphertext),
+        };
+        let encoded = proto.encode_to_vec();
+
+        Ok(STANDARD.encode(&encoded))
     }
+}
+
+fn aes256_ctr_encrypt(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
+    if key.len() != 32 {
+        return Err(Error::new(ErrorKind::InvalidData, "AES-256 key must be 32 bytes"));
+    }
+    let cipher = aes::Aes256::new(GenericArray::from_slice(key));
+    let mut counter = [0u8; 16];
+    let mut out = Vec::with_capacity(plaintext.len());
+
+    for chunk in plaintext.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(&counter);
+        cipher.encrypt_block(&mut block);
+        for (i, &p) in chunk.iter().enumerate() {
+            out.push(p ^ block[i]);
+        }
+        // Big-endian 128-bit counter increment.
+        for i in (0..16).rev() {
+            counter[i] = counter[i].wrapping_add(1);
+            if counter[i] != 0 {
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub struct PrimaryProvisioningCipher {}
