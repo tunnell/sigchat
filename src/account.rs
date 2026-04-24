@@ -188,7 +188,7 @@ impl Account {
                 Ok(Some(registered)),
                 Ok(Some(service_environment)),
                 Ok(storage_key),
-                Ok(Some(store_last_receive_timestamp)),
+                Ok(store_last_receive_timestamp_opt),
                 Ok(Some(store_manifest_version)),
                 Ok(store_manifest),
             ) => Ok(Account {
@@ -211,7 +211,10 @@ impl Account {
                 registered: registered.parse().unwrap(),
                 service_environment: ServiceEnvironment::from_str(&service_environment).unwrap(),
                 storage_key: storage_key,
-                store_last_receive_timestamp: store_last_receive_timestamp.parse().unwrap(),
+                store_last_receive_timestamp: store_last_receive_timestamp_opt
+                    .as_deref()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
                 store_manifest_version: store_manifest_version.parse().unwrap(),
                 store_manifest: store_manifest,
             }),
@@ -395,6 +398,17 @@ impl Account {
         &self.host
     }
 
+    /// Returns the hostname of Signal's messaging/auth service for this account,
+    /// derived from the stored base host and service environment — matches the
+    /// host used by `chat_url()` for REST calls.
+    pub fn chat_host(&self) -> String {
+        let host_s = self.host.to_string();
+        match self.service_environment {
+            ServiceEnvironment::Live => format!("chat.{host_s}"),
+            ServiceEnvironment::Staging => format!("chat.staging.{host_s}"),
+        }
+    }
+
     pub fn is_primary_device(&self) -> bool {
         // Require registered as well: a fresh (unregistered) account with
         // device_id==0 is not a primary device; it is a pre-link placeholder.
@@ -404,7 +418,13 @@ impl Account {
     }
 
     pub fn is_registered(&self) -> bool {
+        // Also treat a partially-linked account as registered: if device_id != 0,
+        // aci_service_id and password are present, the link REST call succeeded and
+        // all keys are usable — the registered flag just wasn't written yet.
         self.registered
+            || (self.device_id != 0
+                && self.aci_service_id.is_some()
+                && self.password.is_some())
     }
 
     #[allow(dead_code)]
