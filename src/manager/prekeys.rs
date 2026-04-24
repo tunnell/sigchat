@@ -4,7 +4,7 @@
 #![deny(clippy::expect_used)]
 #![deny(clippy::panic)]
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use libsignal_protocol::{KeyPair as DjbKeyPair, PrivateKey, kem};
 use rand::{RngCore, TryRngCore as _, rngs::OsRng};
 use std::io::{Error, ErrorKind};
@@ -81,8 +81,8 @@ fn generate_signed_prekey(
 
     Ok(SignedPreKeyJson {
         key_id: random_prekey_id()?,
-        public_key_b64url: URL_SAFE_NO_PAD.encode(&public_serialized),
-        signature_b64url: URL_SAFE_NO_PAD.encode(&signature),
+        public_key_b64url: STANDARD_NO_PAD.encode(&public_serialized),
+        signature_b64url: STANDARD_NO_PAD.encode(&signature),
     })
 }
 
@@ -116,8 +116,8 @@ fn generate_kyber_last_resort(
 
     Ok(KyberPreKeyJson {
         key_id: random_prekey_id()?,
-        public_key_b64url: URL_SAFE_NO_PAD.encode(&public_serialized),
-        signature_b64url: URL_SAFE_NO_PAD.encode(&signature),
+        public_key_b64url: STANDARD_NO_PAD.encode(&public_serialized),
+        signature_b64url: STANDARD_NO_PAD.encode(&signature),
     })
 }
 

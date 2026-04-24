@@ -81,6 +81,7 @@ pub struct Capabilities {
     pub versioned_expiration_timer: bool,
     #[serde(rename = "attachmentBackfill")]
     pub attachment_backfill: bool,
+    pub ssre2: bool,
     pub spqr: bool,
 }
 
@@ -131,6 +132,7 @@ pub fn build_account_attributes(
             storage: true,
             versioned_expiration_timer: true,
             attachment_backfill: true,
+            ssre2: true,
             spqr: true,
         },
         name: encrypted_device_name_b64,
@@ -214,7 +216,7 @@ mod tests {
             assert!(json.get(key).is_some(), "missing {} in AccountAttributes JSON", key);
         }
         let caps = json.get("capabilities").expect("capabilities");
-        for key in ["storage", "versionedExpirationTimer", "attachmentBackfill", "spqr"] {
+        for key in ["storage", "versionedExpirationTimer", "attachmentBackfill", "ssre2", "spqr"] {
             assert_eq!(caps.get(key), Some(&serde_json::Value::Bool(true)), "capabilities.{} should be true", key);
         }
         assert_eq!(json["signalingKey"], serde_json::Value::Null);
