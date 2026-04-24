@@ -317,10 +317,9 @@ impl Manager {
 
     /// Spawn the authenticated receive worker against Signal's main WebSocket.
     ///
-    /// Connects to wss://{host}/v1/websocket/?login={aci}.{device_id}&password={password}
-    /// and begins receiving and decrypting envelopes. Phase 3: delivery to UI
-    /// is logging only. Fails if the account is not registered or lacks credentials.
-    pub fn start_receive(&self) -> Result<(), Error> {
+    /// `chat_cid` is the CID of the Chat UI server; the worker calls PostAdd
+    /// on it whenever a DataMessage arrives. Fails if the account lacks credentials.
+    pub fn start_receive(&self, chat_cid: xous::CID) -> Result<(), Error> {
         let aci = self.account.aci_service_id()
             .ok_or_else(|| Error::new(ErrorKind::Other, "account has no ACI service_id"))?
             .to_string();
@@ -329,7 +328,7 @@ impl Manager {
             .ok_or_else(|| Error::new(ErrorKind::Other, "account has no password"))?
             .to_string();
         let host = self.account.host().to_string();
-        main_ws::MainWsWorker::spawn(aci, device_id, password, host)
+        main_ws::MainWsWorker::spawn(aci, device_id, password, host, chat_cid)
             .map(|_| ())
             .map_err(|e| Error::new(ErrorKind::Other, format!("start_receive: {e}")))
     }
