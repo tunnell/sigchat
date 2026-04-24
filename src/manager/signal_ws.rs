@@ -1,8 +1,6 @@
 use rustls::{ClientConnection, StreamOwned};
-use std::io::{Error, ErrorKind};
+use std::io::{self, Error, ErrorKind};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 use tls::Tls;
 use tungstenite::{Message, WebSocket};
@@ -13,7 +11,7 @@ const REGISTRATION_PATH: [&str; 3] = ["v1", "registration", ""];
 
 #[allow(dead_code)]
 pub struct SignalWS {
-    ws: Arc<Mutex<WebSocket<StreamOwned<ClientConnection, TcpStream>>>>,
+    ws: WebSocket<StreamOwned<ClientConnection, TcpStream>>,
 }
 
 impl SignalWS {
@@ -23,157 +21,111 @@ impl SignalWS {
     }
 
     fn new(url: &Url) -> Result<Self, Error> {
-        match SignalWS::connect(url) {
-            Ok(ws) => Ok(Self {
-                ws: Arc::new(Mutex::new(ws)),
-            }),
-            Err(e) => Err(e),
-        }
+        let ws = SignalWS::connect(url)?;
+        Ok(Self { ws })
     }
 
     pub fn new_provision(url: &mut Url) -> Result<Self, Error> {
         url.set_scheme("wss").expect("failed to set scheme");
-        url.path_segments_mut()
-            .expect("failed to add path")
-            .extend(&PROVISIONING_PATH);
-        Ok(Self::new(&url)?)
+        url.path_segments_mut().expect("failed to add path").extend(&PROVISIONING_PATH);
+        Self::new(url)
     }
 
     #[allow(dead_code)]
     pub fn new_register(url: &mut Url) -> Result<Self, Error> {
         url.set_scheme("wss").expect("failed to set scheme");
-        url.path_segments_mut()
-            .expect("failed to add path")
-            .extend(&REGISTRATION_PATH);
-        Ok(Self::new(&url)?)
+        url.path_segments_mut().expect("failed to add path").extend(&REGISTRATION_PATH);
+        Self::new(url)
     }
 
-    pub fn close(&mut self) {
-        log::info!("attempting to close websocket connection");
-        let ws = self.ws.clone();
-        thread::spawn(move || loop {
-            if let Ok(mut ws) = ws.lock() {
-                ws.close(None)
-                    .unwrap_or_else(|e| log::warn!("failed to close websocket: {e}"));
-                loop {
-                    match ws.flush() {
-                        Ok(()) => (),
-                        Err(
-                            tungstenite::Error::ConnectionClosed
-                            | tungstenite::Error::AlreadyClosed,
-                        ) => {
-                            log::info!("websocket connection closed");
-                            break;
-                        }
-                        Err(e) => {
-                            log::warn!("{e}");
-                            break;
-                        }
-                    }
-                }
-            };
-        });
+    /// Set (or clear) a read timeout on the underlying TCP stream. tungstenite
+    /// reads flow through the rustls ClientConnection down to this socket, so a
+    /// timeout set here propagates as `io::ErrorKind::WouldBlock` or
+    /// `io::ErrorKind::TimedOut` from `ws.read()`. If the stack does not
+    /// support it (e.g. an unusual socket type on a given target), the
+    /// underlying `TcpStream` returns an `io::Error` which is surfaced
+    /// verbatim — the caller decides whether to treat that as fatal.
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        self.ws.get_ref().sock.set_read_timeout(timeout)
     }
 
-    /// Reads a msg from the websocket with optional timeout
-    ///
-    /// Hint: timeout = None is more efficient than Some(Duration(1)
-    ///
-    /// # Arguments
-    ///
-    /// * `timeout` - a duration before the read operation times-out and returns
-    ///
-    /// # Returns
-    /// a message read from the websocket or ErrorKind::TimedOut
-    ///
-    pub fn read(&mut self, timeout: Option<Duration>) -> Result<Message, Error> {
-        match timeout {
-            Some(duration) => {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let ws = self.ws.clone();
-                thread::spawn(move || {
-                    if let Ok(mut ws) = ws.lock() {
-                        tx.send(ws.read())
-                            .unwrap_or_else(|e| log::warn!("failed to forward ws msg: {e}"));
-                    }
-                });
-                match rx.recv_timeout(duration) {
-                    Ok(rx_msg) => match rx_msg {
-                        Ok(msg) => Ok(msg),
-                        Err(e) => {
-                            log::warn!("{e}");
-                            Err(Error::new(ErrorKind::Other, "error on reading ws"))
-                        }
-                    },
-                    Err(e) => {
-                        log::warn!("{e}");
-                        Err(Error::new(ErrorKind::TimedOut, e))
-                    }
-                }
+    /// Convenience method: install a one-shot read timeout, perform a single
+    /// read, restore blocking mode. Intended for the main thread's initial
+    /// UUID read where the worker has not spawned yet. tungstenite errors
+    /// are mapped to `io::Error` (`TimedOut` when the timeout fires).
+    pub fn read_once(&mut self, timeout: Duration) -> io::Result<Message> {
+        self.set_read_timeout(Some(timeout))?;
+        let result = match self.ws.read() {
+            Ok(msg) => Ok(msg),
+            Err(tungstenite::Error::Io(io_err))
+                if matches!(io_err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
+                Err(Error::new(ErrorKind::TimedOut, "ws read_once timeout"))
             }
-            None => {
-                let msg = if let Ok(mut ws) = self.ws.lock() {
-                    match ws.read() {
-                        Ok(msg) => Ok(msg),
-                        Err(e) => {
-                            log::warn!("{e}");
-                            Err(Error::new(ErrorKind::Other, "error on reading ws"))
-                        }
-                    }
-                } else {
-                    Err(Error::new(
-                        ErrorKind::Other,
-                        "failed to get lock on websocket",
-                    ))
-                };
-                msg
+            Err(e) => {
+                log::warn!("ws read_once: {e}");
+                Err(Error::other("ws read error"))
+            }
+        };
+        let _ = self.set_read_timeout(None);
+        result
+    }
+
+    /// Raw `tungstenite::WebSocket::read` passthrough. Intended for the
+    /// worker thread's interleaved loop, which needs to distinguish
+    /// `Error::Io(WouldBlock|TimedOut)` (normal cycle) from real errors.
+    // tungstenite::Error is large (200+ bytes) but we need the raw type so
+    // the worker can pattern-match on it; boxing would just shift the cost.
+    #[allow(clippy::result_large_err)]
+    pub fn read(&mut self) -> Result<Message, tungstenite::Error> {
+        self.ws.read()
+    }
+
+    /// Raw `tungstenite::WebSocket::send` passthrough. Used by the worker's
+    /// keepalive Pings.
+    #[allow(clippy::result_large_err)]
+    pub fn send(&mut self, msg: Message) -> Result<(), tungstenite::Error> {
+        self.ws.send(msg)
+    }
+
+    /// Best-effort close handshake. Consumes `self` so the WebSocket and its
+    /// TLS state are dropped when this returns — matching the shutdown
+    /// semantics in `ws_server.rs` (worker exits its loop then closes).
+    pub fn close(mut self) {
+        log::info!("attempting to close websocket connection");
+        let _ = self.ws.close(None);
+        loop {
+            match self.ws.flush() {
+                Ok(()) => (),
+                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                    log::info!("websocket connection closed");
+                    break;
+                }
+                Err(e) => {
+                    log::warn!("ws close flush: {e}");
+                    break;
+                }
             }
         }
     }
 
-    #[allow(dead_code)]
-    pub fn send(&mut self, _message: Message) -> Result<(), Error> {
-        todo!()
-    }
-
-    /// Make a websocket connection to host server
-    ///
-    /// # Arguments
-    /// * `url` - url of Signal server
-    ///
-    /// # Returns
-    ///
     fn connect(url: &Url) -> Result<WebSocket<StreamOwned<ClientConnection, TcpStream>>, Error> {
         log::info!("attempting websocket connection to {}", url.as_str());
         let host = url.host_str().expect("failed to extract host from url");
-        match TcpStream::connect((host, 443)) {
-            Ok(sock) => {
-                log::info!("tcp connected to {host}");
-                let xtls = Tls::new();
-                match xtls.stream_owned(host, sock) {
-                    Ok(tls_stream) => {
-                        log::info!("tls configured");
-                        match tungstenite::client(url, tls_stream) {
-                            Ok((socket, response)) => {
-                                log::info!("Websocket connected to: {}", url.as_str());
-                                log::info!("Response HTTP code: {}", response.status());
-                                Ok(socket)
-                            }
-                            Err(e) => {
-                                log::info!("failed to connect websocket: {}", e);
-                                Err(Error::from(ErrorKind::ConnectionRefused))
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("failed to configure tls: {e}");
-                        Err(e)
-                    }
-                }
+        let sock = TcpStream::connect((host, 443))?;
+        log::info!("tcp connected to {host}");
+        let xtls = Tls::new();
+        let tls_stream = xtls.stream_owned(host, sock)?;
+        log::info!("tls configured");
+        match tungstenite::client(url, tls_stream) {
+            Ok((socket, response)) => {
+                log::info!("Websocket connected to: {}", url.as_str());
+                log::info!("Response HTTP code: {}", response.status());
+                Ok(socket)
             }
             Err(e) => {
-                log::warn!("failed to connect tcp: {e}");
-                Err(e)
+                log::info!("failed to connect websocket: {}", e);
+                Err(Error::from(ErrorKind::ConnectionRefused))
             }
         }
     }
