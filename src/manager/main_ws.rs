@@ -235,7 +235,7 @@ fn run_session(mut ws: SignalWS, local_addr: &ProtocolAddress, chat_cid: CID) {
             match ws.send(Message::Ping(Vec::new())) {
                 Ok(()) => {
                     last_ping_ms = tt.elapsed_ms();
-                    log::debug!("main_ws: sent keepalive Ping");
+                    log::info!("main_ws: sent keepalive Ping");
                 }
                 Err(e) => {
                     log::warn!("main_ws: keepalive Ping failed: {e}");
@@ -248,11 +248,11 @@ fn run_session(mut ws: SignalWS, local_addr: &ProtocolAddress, chat_cid: CID) {
         let raw = match ws.read() {
             Ok(Message::Binary(b)) => b,
             Ok(Message::Ping(_)) => {
-                log::debug!("main_ws: got server Ping");
+                log::info!("main_ws: got server Ping");
                 continue;
             }
             Ok(Message::Pong(_)) => {
-                log::debug!("main_ws: got server Pong");
+                log::info!("main_ws: got server Pong");
                 continue;
             }
             Ok(Message::Close(c)) => {
