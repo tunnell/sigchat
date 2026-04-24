@@ -45,6 +45,7 @@ rustls-webpki = { version = "=0.102.1"}
 sct = { version = "=0.7.1" }
 # libsignal and supporting crypto crates for Task 5
 libsignal-protocol = { git = "https://github.com/signalapp/libsignal", rev = "98915c442d814cd420f4e1a15630ade0d48e66ae", default-features = false }
+async-trait = "0.1"
 rand = "0.9"
 hkdf = "0.12"
 hmac = "0.12"
