@@ -1,6 +1,6 @@
 mod account;
 pub mod api;
-mod manager;
+pub mod manager;
 #[cfg(target_os = "xous")]
 mod getrandom_xous;
 
