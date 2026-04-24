@@ -327,7 +327,7 @@ impl Manager {
         let password = self.account.password()
             .ok_or_else(|| Error::new(ErrorKind::Other, "account has no password"))?
             .to_string();
-        let host = self.account.host().to_string();
+        let host = self.account.chat_host();
         main_ws::MainWsWorker::spawn(aci, device_id, password, host, chat_cid)
             .map(|_| ())
             .map_err(|e| Error::new(ErrorKind::Other, format!("start_receive: {e}")))
