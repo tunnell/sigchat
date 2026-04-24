@@ -406,6 +406,11 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
                 Ok(pt) => {
                     log::info!("main_ws: PREKEY_BUNDLE decrypted {} bytes from {}",
                         pt.len(), remote_addr.name());
+                    // TODO: prekey replenishment. Each successful PREKEY_BUNDLE decrypt consumes
+                    // one of our uploaded one-time EC pre-keys on the server. sigchat does not
+                    // currently upload replacements (no PUT /v2/keys flow), so eventually the
+                    // server's stock runs out and new contacts can no longer establish sessions.
+                    // See REPORTS/STATUS.md "prekey-replenishment" for tracking.
                     pt
                 }
                 Err(e) => {
