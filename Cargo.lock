@@ -3070,6 +3070,7 @@ dependencies = [
  "com",
  "com_rs",
  "content-plugin-api",
+ "futures",
  "gam",
  "getrandom 0.3.4",
  "graphics-server",
