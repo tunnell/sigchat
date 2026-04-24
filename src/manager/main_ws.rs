@@ -1,11 +1,8 @@
 //! Authenticated main WebSocket worker for Signal message receive.
 //!
 //! Connects to wss://{host}/v1/websocket/?login={aci}.{device_id}&password={password},
-//! decrypts incoming envelopes using the Phase 2 pddb-backed stores, parses the
-//! decrypted Content proto, and delivers DataMessage text to the Chat UI via IPC.
-//!
-//! Lifecycle: spawned by `Manager::start_receive()`; runs until the connection
-//! drops or an unrecoverable error occurs. Fire-and-forget — no IPC needed back.
+//! decrypts incoming envelopes, parses Content proto, and delivers text to the
+//! Chat UI. Reconnects automatically with 2–64s exponential backoff on disconnect.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -45,12 +42,13 @@ const SESSION_DICT: &'static str = "sigchat.session";
 const WS_TYPE_REQUEST: i32 = 1;
 const WS_TYPE_RESPONSE: i32 = 2;
 
-// Envelope.type values from signalservice.proto
 const ENVELOPE_CIPHERTEXT: i32 = 1;
 const ENVELOPE_PREKEY_BUNDLE: i32 = 3;
 
-// ---- Inline prost message definitions ---------------------------------------
-// Mirror SignalService.proto and WebSocketProtos.proto wire types.
+const RECONNECT_BACKOFF_INITIAL_MS: u64 = 2_000;
+const RECONNECT_BACKOFF_MAX_MS: u64 = 64_000;
+
+// ---- Inline prost definitions -----------------------------------------------
 
 #[derive(prost::Message)]
 struct WsRequestProto {
@@ -93,10 +91,8 @@ struct WsMessageProto {
 // Signal Envelope (signalservice.proto)
 #[derive(prost::Message)]
 struct EnvelopeProto {
-    // 1=CIPHERTEXT, 3=PREKEY_BUNDLE, 5=RECEIPT, 6=UNIDENTIFIED_SENDER
     #[prost(int32, optional, tag = "1")]
     r#type: Option<i32>,
-    // sourceServiceId: sender's ACI UUID string
     #[prost(string, optional, tag = "2")]
     source_service_id: Option<String>,
     #[prost(uint32, optional, tag = "7")]
@@ -107,24 +103,43 @@ struct EnvelopeProto {
     content: Option<Vec<u8>>,
 }
 
-// Content / DataMessage (signalservice.proto)
-// Only the fields needed for Phase 4 text delivery.
+// DataMessage (signalservice.proto)
 #[derive(prost::Message)]
 struct DataMessageProto {
-    // body: plain-text content of the message
     #[prost(string, optional, tag = "1")]
     body: Option<String>,
-    // timestamp: milliseconds since epoch the sender stamped the message
     #[prost(uint64, optional, tag = "5")]
     timestamp: Option<u64>,
 }
 
+// SyncMessage.Sent (signalservice.proto)
+#[derive(prost::Message)]
+struct SentMessageProto {
+    // destinationServiceId: ACI of the recipient
+    #[prost(string, optional, tag = "1")]
+    destination_service_id: Option<String>,
+    #[prost(uint64, optional, tag = "2")]
+    timestamp: Option<u64>,
+    #[prost(message, optional, tag = "3")]
+    message: Option<DataMessageProto>,
+}
+
+// SyncMessage (signalservice.proto)
+#[derive(prost::Message)]
+struct SyncMessageProto {
+    #[prost(message, optional, tag = "1")]
+    sent: Option<SentMessageProto>,
+    // Other sub-messages are present on the wire but opaque for Phase 5 —
+    // prost silently ignores unknown fields.
+}
+
+// Content (signalservice.proto)
 #[derive(prost::Message)]
 struct ContentProto {
     #[prost(message, optional, tag = "1")]
     data_message: Option<DataMessageProto>,
-    // Other sub-messages (sync, call, receipt…) are present on the wire but
-    // opaque for Phase 4 — prost silently ignores unknown fields.
+    #[prost(message, optional, tag = "2")]
+    sync_message: Option<SyncMessageProto>,
 }
 
 // ---- Public interface -------------------------------------------------------
@@ -134,9 +149,6 @@ pub struct MainWsWorker {
 }
 
 impl MainWsWorker {
-    /// Spawn the receive worker. `chat_cid` is the CID of the Chat UI server;
-    /// the worker calls PostAdd on it whenever a DataMessage arrives.
-    /// Returns immediately; the worker runs until the connection drops.
     pub fn spawn(
         aci_service_id: String,
         device_id: u32,
@@ -151,15 +163,13 @@ impl MainWsWorker {
         Ok(Self { thread: t })
     }
 
-    /// Block until the worker exits. Provided for clean shutdown; callers
-    /// normally discard the handle and let the worker run freely.
     #[allow(dead_code)]
     pub fn join(self) {
         let _ = self.thread.join();
     }
 }
 
-// ---- Worker -----------------------------------------------------------------
+// ---- Outer reconnect loop ---------------------------------------------------
 
 fn worker_loop(
     aci_service_id: String,
@@ -168,8 +178,6 @@ fn worker_loop(
     host: String,
     chat_cid: CID,
 ) {
-    log::info!("main_ws: connecting to {host}");
-
     if device_id == 0 || device_id > 127 {
         log::error!("main_ws: device_id {device_id} out of valid Signal range (1..=127)");
         return;
@@ -180,15 +188,32 @@ fn worker_loop(
     };
     let local_addr = ProtocolAddress::new(aci_service_id.clone(), local_device);
 
-    let mut ws = match SignalWS::new_message(&host, &aci_service_id, device_id, &password) {
-        Ok(ws) => ws,
-        Err(e) => {
-            log::error!("main_ws: connect failed: {e}");
-            return;
-        }
-    };
-    log::info!("main_ws: authenticated websocket established");
+    let mut backoff_ms = RECONNECT_BACKOFF_INITIAL_MS;
 
+    loop {
+        log::info!("main_ws: connecting to {host}");
+        match SignalWS::new_message(&host, &aci_service_id, device_id, &password) {
+            Ok(ws) => {
+                backoff_ms = RECONNECT_BACKOFF_INITIAL_MS;
+                log::info!("main_ws: authenticated websocket established");
+                run_session(ws, &local_addr, chat_cid);
+                log::info!("main_ws: session ended, reconnecting in {}ms", backoff_ms);
+            }
+            Err(e) => {
+                log::warn!("main_ws: connect failed: {e}, retrying in {}ms", backoff_ms);
+            }
+        }
+
+        if let Ok(tt) = Ticktimer::new() {
+            let _ = tt.sleep_ms(backoff_ms as usize);
+        }
+        backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_MAX_MS);
+    }
+}
+
+// ---- Inner session loop -----------------------------------------------------
+
+fn run_session(mut ws: SignalWS, local_addr: &ProtocolAddress, chat_cid: CID) {
     if let Err(e) = ws.set_read_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS))) {
         log::warn!("main_ws: set_read_timeout failed: {e}");
     }
@@ -254,21 +279,19 @@ fn worker_loop(
         match ws_msg.r#type {
             Some(WS_TYPE_REQUEST) => {
                 if let Some(req) = ws_msg.request {
-                    handle_request(&mut ws, req, &local_addr, chat_cid);
+                    handle_request(&mut ws, req, local_addr, chat_cid);
                 }
             }
-            Some(WS_TYPE_RESPONSE) => {
-                // ACKs from server for our keep-alive requests — ignore.
-            }
-            other => {
-                log::debug!("main_ws: unhandled WsMessage type {other:?}");
-            }
+            Some(WS_TYPE_RESPONSE) => {}
+            other => log::debug!("main_ws: unhandled WsMessage type {other:?}"),
         }
     }
 
-    log::info!("main_ws: worker loop exited; closing websocket");
+    log::info!("main_ws: session loop exited; closing websocket");
     ws.close();
 }
+
+// ---- Request dispatch -------------------------------------------------------
 
 fn handle_request(
     ws: &mut SignalWS,
@@ -311,6 +334,8 @@ fn send_ack(ws: &mut SignalWS, id: u64, status: u32) {
     }
 }
 
+// ---- Envelope decryption ----------------------------------------------------
+
 fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID) {
     let envelope = match EnvelopeProto::decode(body.as_slice()) {
         Ok(e) => e,
@@ -330,13 +355,13 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
     let content = match envelope.content {
         Some(c) => c,
         None => {
-            log::debug!("main_ws: envelope type={env_type} has no content bytes, skipping");
+            log::debug!("main_ws: envelope type={env_type} has no content bytes");
             return;
         }
     };
 
     if source_dev == 0 || source_dev > 127 {
-        log::warn!("main_ws: source_device {source_dev} out of valid range (1..=127), skipping");
+        log::warn!("main_ws: source_device {source_dev} out of range (1..=127), skipping");
         return;
     }
     let sender_device = match DeviceId::new(source_dev as u8) {
@@ -345,7 +370,6 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
     };
     let remote_addr = ProtocolAddress::new(source_id, sender_device);
 
-    // Create one pddb handle per store (each takes ownership).
     let pddb_id = pddb::Pddb::new(); pddb_id.try_mount();
     let pddb_pk = pddb::Pddb::new(); pddb_pk.try_mount();
     let pddb_spk = pddb::Pddb::new(); pddb_spk.try_mount();
@@ -361,7 +385,7 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
 
     let plaintext = match env_type {
         ENVELOPE_PREKEY_BUNDLE => {
-            let prekey_msg = match PreKeySignalMessage::try_from(content.as_ref()) {
+            let msg = match PreKeySignalMessage::try_from(content.as_ref()) {
                 Ok(m) => m,
                 Err(e) => {
                     log::warn!("main_ws: PreKeySignalMessage parse failed: {e:?}");
@@ -369,7 +393,7 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
                 }
             };
             match block_on(message_decrypt_prekey(
-                &prekey_msg,
+                &msg,
                 &remote_addr,
                 local_addr,
                 &mut session_store,
@@ -380,10 +404,8 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
                 &mut rng,
             )) {
                 Ok(pt) => {
-                    log::info!(
-                        "main_ws: PREKEY_BUNDLE decrypted {} bytes from {}",
-                        pt.len(), remote_addr.name()
-                    );
+                    log::info!("main_ws: PREKEY_BUNDLE decrypted {} bytes from {}",
+                        pt.len(), remote_addr.name());
                     pt
                 }
                 Err(e) => {
@@ -394,7 +416,7 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
             }
         }
         ENVELOPE_CIPHERTEXT => {
-            let signal_msg = match SignalMessage::try_from(content.as_ref()) {
+            let msg = match SignalMessage::try_from(content.as_ref()) {
                 Ok(m) => m,
                 Err(e) => {
                     log::warn!("main_ws: SignalMessage parse failed: {e:?}");
@@ -402,17 +424,15 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
                 }
             };
             match block_on(message_decrypt_signal(
-                &signal_msg,
+                &msg,
                 &remote_addr,
                 &mut session_store,
                 &mut identity_store,
                 &mut rng,
             )) {
                 Ok(pt) => {
-                    log::info!(
-                        "main_ws: CIPHERTEXT decrypted {} bytes from {}",
-                        pt.len(), remote_addr.name()
-                    );
+                    log::info!("main_ws: CIPHERTEXT decrypted {} bytes from {}",
+                        pt.len(), remote_addr.name());
                     pt
                 }
                 Err(e) => {
@@ -431,7 +451,8 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
     deliver_content(plaintext, &remote_addr, ts, chat_cid);
 }
 
-/// Decode the decrypted Content proto and push any DataMessage text to the Chat UI.
+// ---- Content delivery -------------------------------------------------------
+
 fn deliver_content(plaintext: Vec<u8>, remote_addr: &ProtocolAddress, server_ts: u64, chat_cid: CID) {
     let content = match ContentProto::decode(plaintext.as_slice()) {
         Ok(c) => c,
@@ -441,30 +462,59 @@ fn deliver_content(plaintext: Vec<u8>, remote_addr: &ProtocolAddress, server_ts:
         }
     };
 
-    if let Some(dm) = content.data_message {
-        let body = dm.body.unwrap_or_default();
-        if body.is_empty() {
-            log::debug!("main_ws: DataMessage with no body from {} (attachment/reaction?)",
-                remote_addr.name());
-            return;
-        }
-        // Use the sender-stamped timestamp when available; fall back to server_ts.
-        let ts = dm.timestamp.unwrap_or(server_ts);
-        cf_post_add(chat_cid, remote_addr.name(), ts, &body);
-        log::info!(
-            "main_ws: delivered {} chars from {} to chat UI",
-            body.len(), remote_addr.name()
-        );
+    let delivered = if let Some(dm) = content.data_message {
+        deliver_data_message(dm, remote_addr.name(), server_ts, chat_cid)
+    } else if let Some(sync) = content.sync_message {
+        deliver_sync_message(sync, server_ts, chat_cid)
     } else {
-        log::debug!(
-            "main_ws: Content from {} has no DataMessage (sync/call/receipt/etc.)",
-            remote_addr.name()
-        );
+        log::debug!("main_ws: Content from {} has no DataMessage or SyncMessage", remote_addr.name());
+        false
+    };
+
+    if delivered {
+        chat::cf_redraw(chat_cid);
     }
 }
 
-fn cf_post_add(chat_cid: CID, author: &str, timestamp: u64, text: &str) {
-    chat::cf_post_add(chat_cid, author, timestamp, text);
+fn deliver_data_message(dm: DataMessageProto, author: &str, server_ts: u64, chat_cid: CID) -> bool {
+    let body = dm.body.unwrap_or_default();
+    if body.is_empty() {
+        log::debug!("main_ws: DataMessage with no body from {author} (attachment/reaction?)");
+        return false;
+    }
+    let ts = dm.timestamp.unwrap_or(server_ts);
+    chat::cf_post_add(chat_cid, author, ts, &body);
+    log::info!("main_ws: delivered {} chars from {author}", body.len());
+    true
+}
+
+fn deliver_sync_message(sync: SyncMessageProto, server_ts: u64, chat_cid: CID) -> bool {
+    let sent = match sync.sent {
+        Some(s) => s,
+        None => {
+            log::debug!("main_ws: SyncMessage has no Sent sub-message (contacts/request/etc.)");
+            return false;
+        }
+    };
+    let sent_ts = sent.timestamp;
+    let dest = sent.destination_service_id.unwrap_or_default();
+    let dm = match sent.message {
+        Some(m) => m,
+        None => {
+            log::debug!("main_ws: SyncMessage.Sent has no DataMessage");
+            return false;
+        }
+    };
+    let body = dm.body.unwrap_or_default();
+    if body.is_empty() {
+        return false;
+    }
+    let ts = dm.timestamp.unwrap_or_else(|| sent_ts.unwrap_or(server_ts));
+    // Prefix "→" marks messages sent by this device to distinguish from received.
+    let author = format!("\u{2192}{}", &dest[..dest.len().min(8)]);
+    chat::cf_post_add(chat_cid, &author, ts, &body);
+    log::info!("main_ws: delivered {} chars (sync-sent to {})", body.len(), dest);
+    true
 }
 
 fn is_timeout(e: &tungstenite::Error) -> bool {
