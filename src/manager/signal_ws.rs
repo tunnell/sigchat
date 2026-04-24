@@ -15,9 +15,18 @@ pub struct SignalWS {
 }
 
 impl SignalWS {
-    #[allow(dead_code)]
-    pub fn new_message(_host: &str) -> Result<Self, Error> {
-        todo!();
+    pub fn new_message(
+        host: &str,
+        aci_service_id: &str,
+        device_id: u32,
+        password: &str,
+    ) -> Result<Self, Error> {
+        let mut url = Url::parse(&format!("wss://{}/v1/websocket/", host))
+            .map_err(|_| Error::new(ErrorKind::InvalidInput, "invalid host for ws url"))?;
+        url.query_pairs_mut()
+            .append_pair("login", &format!("{}.{}", aci_service_id, device_id))
+            .append_pair("password", password);
+        Self::new(&url)
     }
 
     fn new(url: &Url) -> Result<Self, Error> {

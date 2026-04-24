@@ -3,6 +3,7 @@ mod config;
 mod group_permission;
 pub mod libsignal; // stub
 mod link_state;
+mod main_ws;
 pub mod prekeys;
 pub mod rest;
 mod signal_ws;
@@ -312,6 +313,25 @@ impl Manager {
                 Err(link_err)
             }
         }
+    }
+
+    /// Spawn the authenticated receive worker against Signal's main WebSocket.
+    ///
+    /// Connects to wss://{host}/v1/websocket/?login={aci}.{device_id}&password={password}
+    /// and begins receiving and decrypting envelopes. Phase 3: delivery to UI
+    /// is logging only. Fails if the account is not registered or lacks credentials.
+    pub fn start_receive(&self) -> Result<(), Error> {
+        let aci = self.account.aci_service_id()
+            .ok_or_else(|| Error::new(ErrorKind::Other, "account has no ACI service_id"))?
+            .to_string();
+        let device_id = self.account.device_id();
+        let password = self.account.password()
+            .ok_or_else(|| Error::new(ErrorKind::Other, "account has no password"))?
+            .to_string();
+        let host = self.account.host().to_string();
+        main_ws::MainWsWorker::spawn(aci, device_id, password, host)
+            .map(|_| ())
+            .map_err(|e| Error::new(ErrorKind::Other, format!("start_receive: {e}")))
     }
 
     /// Link another device to this device. Only works, if this is the primary device.
