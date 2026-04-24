@@ -349,6 +349,24 @@ impl<'a> SigChat<'a> {
         }
     }
 
+    /// Spawn the authenticated receive worker and wire it to the Chat UI.
+    ///
+    /// Must be called after a successful `connect()`. `chat_cid` is obtained
+    /// from `chat.cid()` in the main binary; it is `Copy` (u32 alias) so it
+    /// can be passed freely between threads.
+    pub fn start_receive(&self, chat_cid: xous::CID) -> Result<bool, Error> {
+        match &self.manager {
+            Some(mgr) => mgr
+                .start_receive(chat_cid)
+                .map(|_| true)
+                .map_err(|e| Error::new(ErrorKind::Other, format!("start_receive: {e}"))),
+            None => {
+                log::warn!("start_receive called before connect — no manager");
+                Ok(false)
+            }
+        }
+    }
+
     pub fn redraw(&self) {
         self.chat.redraw();
     }
