@@ -290,12 +290,44 @@ impl KyberPreKeyStore for PddbKyberPreKeyStore {
     async fn mark_kyber_pre_key_used(
         &mut self,
         kyber_prekey_id: KyberPreKeyId,
-        _ec_prekey_id: SignedPreKeyId,
-        _base_key: &PublicKey,
+        ec_prekey_id: SignedPreKeyId,
+        base_key: &PublicKey,
     ) -> SignalResult<()> {
-        // Last-resort key — do NOT delete it; just log usage.
-        log::debug!("kyber last-resort key {} used", u32::from(kyber_prekey_id));
-        Ok(())
+        // sigchat currently only uploads last-resort Kyber pre-keys (see
+        // manager/prekeys.rs::generate_kyber_last_resort), so every call lands
+        // on libsignal's "last-resort" path:
+        //   * do NOT delete the key
+        //   * reject reuse of the same (kyber_id, ec_prekey_id, base_key) tuple
+        // If sigchat ever starts uploading one-time Kyber pre-keys, this store
+        // will need a way to tell them apart and delete one-time keys on first use.
+        let base_pk_b64 = URL_SAFE_NO_PAD.encode(base_key.serialize());
+        let dedup_key = format!(
+            "used:{}:{}:{}",
+            u32::from(kyber_prekey_id),
+            u32::from(ec_prekey_id),
+            base_pk_b64,
+        );
+        match pddb_read_binary(&self.pddb, self.dict, &dedup_key) {
+            Ok(_) => {
+                log::warn!(
+                    "kyber prekey reuse rejected: kyber={} ec={}",
+                    u32::from(kyber_prekey_id),
+                    u32::from(ec_prekey_id),
+                );
+                Err(SignalProtocolError::InvalidKyberPreKeyId)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                pddb_write_binary(&self.pddb, self.dict, &dedup_key, &[1u8])
+                    .map_err(|e| io_err_to_signal(e, "mark used: write failed"))?;
+                log::debug!(
+                    "kyber last-resort key {} marked used (ec={})",
+                    u32::from(kyber_prekey_id),
+                    u32::from(ec_prekey_id),
+                );
+                Ok(())
+            }
+            Err(e) => Err(io_err_to_signal(e, "mark used: read failed")),
+        }
     }
 }
 
