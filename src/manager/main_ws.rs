@@ -30,6 +30,12 @@ use crate::manager::stores::{
 };
 
 const KEEPALIVE_MS: u64 = 25_000;
+// Signal's application-layer WS keepalive interval, per libsignal-service-rs
+// (push_service::KEEPALIVE_TIMEOUT_SECONDS = 55s). This is SEPARATE from the
+// WS-protocol Ping above: the server tracks application liveness independently
+// and does not push queued messages on connections that have not sent one.
+const APP_KEEPALIVE_MS: u64 = 55_000;
+const APP_KEEPALIVE_PATH: &'static str = "/v1/keepalive";
 const READ_TIMEOUT_MS: u64 = 500;
 
 const ACCOUNT_DICT: &'static str = "sigchat.account";
@@ -228,9 +234,15 @@ fn run_session(mut ws: SignalWS, local_addr: &ProtocolAddress, chat_cid: CID) {
     };
 
     let mut last_ping_ms = tt.elapsed_ms();
+    let mut next_request_id: u64 = 1;
+    // Fire the application-layer keepalive immediately on connect: libsignal-service-rs
+    // uses tokio::time::interval_at(Instant::now(), ...), so its first tick fires at t=0.
+    // Without this initial request the server appears to hold queued messages.
+    let mut last_app_keepalive_ms = tt.elapsed_ms().saturating_sub(APP_KEEPALIVE_MS);
 
     loop {
-        // (1) Application-layer keepalive Ping.
+        // (1a) WS-protocol Ping (25s). Useful for NAT/TCP keepalive; the server
+        // returns Pong at this layer.
         if tt.elapsed_ms().saturating_sub(last_ping_ms) >= KEEPALIVE_MS {
             match ws.send(Message::Ping(Vec::new())) {
                 Ok(()) => {
@@ -239,6 +251,35 @@ fn run_session(mut ws: SignalWS, local_addr: &ProtocolAddress, chat_cid: CID) {
                 }
                 Err(e) => {
                     log::warn!("main_ws: keepalive Ping failed: {e}");
+                    break;
+                }
+            }
+        }
+
+        // (1b) Signal application-layer keepalive (55s): WsRequestProto
+        // { verb=GET, path=/v1/keepalive }. Required for the server to push
+        // queued messages on the connection.
+        if tt.elapsed_ms().saturating_sub(last_app_keepalive_ms) >= APP_KEEPALIVE_MS {
+            let req = WsRequestProto {
+                verb: Some("GET".to_string()),
+                path: Some(APP_KEEPALIVE_PATH.to_string()),
+                body: None,
+                id: Some(next_request_id),
+                headers: Vec::new(),
+            };
+            let msg = WsMessageProto {
+                r#type: Some(WS_TYPE_REQUEST),
+                request: Some(req),
+                response: None,
+            };
+            match ws.send(Message::Binary(msg.encode_to_vec())) {
+                Ok(()) => {
+                    last_app_keepalive_ms = tt.elapsed_ms();
+                    log::info!("main_ws: sent app keepalive (id={next_request_id})");
+                    next_request_id = next_request_id.wrapping_add(1);
+                }
+                Err(e) => {
+                    log::warn!("main_ws: app keepalive send failed: {e}");
                     break;
                 }
             }
