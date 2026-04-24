@@ -6,6 +6,7 @@ mod link_state;
 pub mod prekeys;
 pub mod rest;
 mod signal_ws;
+pub mod stores;
 mod trust_mode;
 mod ws_server;
 
