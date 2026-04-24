@@ -126,7 +126,23 @@ impl SignalWS {
         let xtls = Tls::new();
         let tls_stream = xtls.stream_owned(host, sock)?;
         log::info!("tls configured");
-        match tungstenite::client(url, tls_stream) {
+        // Build the upgrade request explicitly so we can attach
+        // X-Signal-Receive-Stories. libsignal-service-rs always sets this
+        // header on the authenticated receive WS; without it Signal's server
+        // accepts the connection and replies to app-layer keepalives but
+        // does not push queued messages. Reference: receiver.rs:24-42.
+        let request = tungstenite::http::Request::builder()
+            .method("GET")
+            .uri(url.as_str())
+            .header("Host", host)
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
+            .header("X-Signal-Receive-Stories", "true")
+            .body(())
+            .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("build ws upgrade req: {e}")))?;
+        match tungstenite::client(request, tls_stream) {
             Ok((socket, response)) => {
                 log::info!("Websocket connected to: {}", url.as_str());
                 log::info!("Response HTTP code: {}", response.status());
