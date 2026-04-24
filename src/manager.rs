@@ -1,10 +1,15 @@
+pub mod account_attrs;
 mod config;
 mod group_permission;
 pub mod libsignal; // stub
 mod link_state;
+pub mod prekeys;
+pub mod rest;
 mod signal_ws;
 mod trust_mode;
+mod ws_server;
 
+use base64::{engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD}, Engine as _};
 use crate::Account;
 pub use config::Config;
 use group_permission::GroupPermission;
@@ -16,6 +21,7 @@ use std::io::{Error, ErrorKind};
 use std::time::Duration;
 pub use trust_mode::TrustMode;
 use tungstenite::Message;
+use ws_server::{SignalWsServer, WsResult};
 
 // Structure modeled on signal-cli by AsamK <asamk@gmx.de> and contributors - https://github.com/AsamK/signal-cli.
 // signal-cli is a commandline interface for libsignal-service-java. It supports registering, verifying, sending and receiving messages.
@@ -157,78 +163,152 @@ impl Manager {
     pub fn link(&mut self, name: &str) -> Result<bool, Error> {
         let link_err = Error::new(ErrorKind::Other, "failed to link device");
         let mut host = self.config.url().clone();
-        match SignalWS::new_provision(&mut host) {
-            Ok(mut ws) => {
-                log::info!("provisioning websocket established to {host}");
-                let result = match ws.read(Some(Duration::from_millis(5000))) {
-                    Ok(Message::Binary(uuid)) => {
-                        log::info!("received Provisioning UUID message from host");
-                        let uuid = libsignal::ProvisioningUuid::decode(uuid).id.clone();
-                        let identity_key_pair = libsignal::generate_identity_key_pair();
-                        let pub_key = identity_key_pair.djb_identity_key.key.clone();
-                        match url::Url::parse_with_params(
-                            "sgnl://linkdevice",
-                            &[("uuid", &uuid.as_str()), ("pub_key", &pub_key.as_str())],
-                        ) {
-                            Ok(device_link_uri) => {
-                                log::info!("device_link_uri: {device_link_uri}");
-                                let xns = xous_names::XousNames::new().unwrap();
-                                let modals =
-                                    Modals::new(&xns).expect("can't connect to Modals server");
-                                modals
-                                    .show_notification(
-                                        t!("sigchat.account.link.scan", locales::LANG),
-                                        Some(device_link_uri.as_str()),
-                                    )
-                                    .expect("qrcode failed");
-                                match ws.read(Some(Duration::from_millis(5000))) {
-                                    Ok(Message::Binary(registration)) => {
-                                        log::info!("Registration message received from host");
-                                        match self.account.link(
-                                            name,
-                                            libsignal::ProvisionMessage::decode(
-                                                identity_key_pair,
-                                                registration,
-                                            ),
-                                        ) {
-                                            Ok(result) => Ok(result),
-                                            Err(e) => {
-                                                log::warn!("linking error: {e}");
-                                                Ok(false)
-                                            }
-                                        }
-                                    }
-                                    Ok(_) => {
-                                        log::warn!("unexpected Provisioning msg");
-                                        Err(link_err)
-                                    }
-                                    Err(e) => {
-                                        log::warn!("{e}");
-                                        Err(link_err)
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                log::info!("{}", format!("{e}"));
-                                Err(link_err)
-                            }
-                        }
-                    }
-                    Ok(_) => {
-                        log::warn!("unexpected Provisioning msg.");
-                        Err(link_err)
-                    }
-                    Err(e) => {
-                        log::warn!("{e}");
-                        Err(link_err)
-                    }
-                };
+        let mut ws = match SignalWS::new_provision(&mut host) {
+            Ok(ws) => ws,
+            Err(e) => {
+                log::info!("failed to connect to server: {e}");
+                return Err(e);
+            }
+        };
+        log::info!("provisioning websocket established to {host}");
+
+        // Initial UUID read — on the main thread. Modal is not up yet so we
+        // don't need keepalive; a 5s one-shot is enough.
+        let uuid = match ws.read_once(Duration::from_millis(5000)) {
+            Ok(Message::Binary(uuid)) => match libsignal::ProvisioningUuid::decode(uuid) {
+                Ok(pu) => pu.id,
+                Err(e) => {
+                    log::error!("failed to decode ProvisioningUuid: {e}");
+                    ws.close();
+                    return Err(link_err);
+                }
+            },
+            Ok(_) => {
+                log::warn!("unexpected Provisioning msg.");
                 ws.close();
-                result
+                return Err(link_err);
             }
             Err(e) => {
-                log::info!("failed to connect to server: {}", e);
-                Err(e)
+                log::warn!("initial UUID read: {e}");
+                ws.close();
+                return Err(link_err);
+            }
+        };
+
+        let identity_key_pair = libsignal::generate_identity_key_pair();
+        // Match Signal-Android ProvisioningSocket.kt generateProvisioningUrl:
+        //   pub_key = STANDARD base64 (not URL-safe), full 33 bytes (0x05+key),
+        //             no padding; url crate percent-encodes + and / automatically.
+        //   uuid    = strip any trailing '=' padding (server may include it).
+        //   capabilities=backup5 is unconditional for LINK mode.
+        let pub_key = {
+            let b = URL_SAFE_NO_PAD
+                .decode(&identity_key_pair.djb_identity_key.key)
+                .unwrap_or_default();
+            if b.len() != 33 {
+                log::error!("identity pub key len={}, expected 33", b.len());
+                ws.close();
+                return Err(link_err);
+            }
+            STANDARD_NO_PAD.encode(&b)
+        };
+        // Keep the uuid string exactly as received from ProvisioningUuid.id.
+        // Signal's server uses this as a session routing key; stripping
+        // trailing '=' padding breaks lookup. Reference: Signal Desktop's
+        // captured QR URL keeps the %3D%3D padding.
+        let device_link_uri = match url::Url::parse_with_params(
+            "sgnl://linkdevice",
+            &[
+                ("uuid", uuid.as_str()),
+                ("pub_key", pub_key.as_str()),
+                ("capabilities", "backup5"),
+            ],
+        ) {
+            Ok(u) => u,
+            Err(e) => {
+                log::info!("{e}");
+                ws.close();
+                return Err(link_err);
+            }
+        };
+        log::info!("device_link_uri: {device_link_uri}");
+
+        let xns = match xous_names::XousNames::new() {
+            Ok(xns) => xns,
+            Err(e) => {
+                log::error!("failed to connect to XousNames: {e:?}");
+                ws.close();
+                return Err(link_err);
+            }
+        };
+        let modals = match Modals::new(&xns) {
+            Ok(m) => m,
+            Err(e) => {
+                log::error!("failed to connect to Modals: {e:?}");
+                ws.close();
+                return Err(link_err);
+            }
+        };
+
+        // Hand ws to the worker; it now owns the TLS stream. Deadline starts
+        // here (worker spawn time), which is the correct clock start per the
+        // approved design — the QR modal goes up on the next line, and the
+        // worker is already driving keepalives by the time the user scans.
+        let server = match SignalWsServer::spawn(ws, 180) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("ws_server spawn failed: {e}");
+                return Err(link_err);
+            }
+        };
+
+        if let Err(e) = modals.show_notification(
+            t!("sigchat.account.link.scan", locales::LANG),
+            Some(device_link_uri.as_str()),
+        ) {
+            log::error!("QR modal failed: {e:?}");
+            let _ = server.cancel();
+            return Err(link_err);
+        }
+
+        let result = server.wait_and_take_binary();
+        // Cancel is the explicit shutdown handshake — even on success. It
+        // blocks until the worker drains any parked waiter, destroys its
+        // SID, and exits.
+        let _ = server.cancel();
+
+        let registration = match result {
+            WsResult::Binary(b) => b,
+            WsResult::Closed => {
+                log::warn!("ws closed before ProvisionEnvelope");
+                return Err(link_err);
+            }
+            WsResult::TimedOut => {
+                log::warn!("ws timed out waiting for ProvisionEnvelope");
+                return Err(link_err);
+            }
+            WsResult::Cancelled => {
+                log::warn!("ws cancelled before ProvisionEnvelope");
+                return Err(link_err);
+            }
+            WsResult::Error(e) => {
+                log::warn!("ws error: {e}");
+                return Err(link_err);
+            }
+        };
+
+        log::info!("Registration message received from host");
+        match libsignal::ProvisionMessage::decode(identity_key_pair, registration) {
+            Ok(provision_msg) => match self.account.link(name, provision_msg) {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    log::warn!("linking error: {e}");
+                    Ok(false)
+                }
+            },
+            Err(e) => {
+                log::error!("failed to decrypt ProvisionMessage: {e}");
+                Err(link_err)
             }
         }
     }

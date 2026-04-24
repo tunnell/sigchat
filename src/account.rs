@@ -1,11 +1,16 @@
 mod service_environment;
 
-use crate::manager::libsignal::{DeviceNameUtil, ProvisionMessage, SignalServiceAddress};
+use crate::manager::account_attrs;
+use crate::manager::libsignal::{DeviceNameUtil, IdentityKey, ProvisionMessage, SignalServiceAddress};
+use crate::manager::prekeys;
+use crate::manager::rest;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use libsignal_protocol::PrivateKey;
 use pddb::Pddb;
 pub use service_environment::ServiceEnvironment;
 use std::io::{Error, ErrorKind, Read, Write};
 use std::str::FromStr;
-use url::Host;
+use url::{Host, Url};
 
 /// The Account struct is architected as a cache over a pddb dictionary.
 ///
@@ -47,6 +52,7 @@ pub struct Account {
 
 pub const DEFAULT_HOST: &str = "signal.org";
 
+const ACCOUNT_ENTROPY_POOL_KEY: &str = "aep";
 const ACI_IDENTITY_PRIVATE_KEY: &str = "aci.identity.private";
 const ACI_IDENTITY_PUBLIC_KEY: &str = "aci.identity.public";
 const ACI_SERVICE_ID_KEY: &str = "aci.service_id";
@@ -59,9 +65,11 @@ const PASSWORD_KEY: &str = "password";
 const PIN_MASTER_KEY_KEY: &str = "pin_master_key";
 const PNI_IDENTITY_PRIVATE_KEY: &str = "pni.identity.private";
 const PNI_IDENTITY_PUBLIC_KEY: &str = "pni.identity.public";
+const PNI_REGISTRATION_ID_KEY: &str = "pni.registration_id";
 const PNI_SERVICE_ID_KEY: &str = "pni.service_id";
 const PROFILE_KEY_KEY: &str = "profile_key";
 const REGISTERED_KEY: &str = "registered";
+const REGISTRATION_ID_KEY: &str = "registration_id";
 const SERVICE_ENVIRONMENT_KEY: &str = "service_environment";
 const STORAGE_KEY_KEY: &str = "storage_key";
 const STORE_LAST_RECEIVE_TIMESTAMP_KEY: &str = "store_last_receive_timestamp";
@@ -264,64 +272,123 @@ impl Account {
         device_name: &str,
         provisioning_msg: ProvisionMessage,
     ) -> Result<bool, Error> {
-        // Check if this device can be relinked
         if self.is_primary_device() {
             log::warn!("failed to link device as already registered as primary");
             return Ok(false);
         }
-        // TODO complete link pre-checks
-        // } else if self.is_registered()
-        // && self.service_environment() != provisioning_msg.service_environment{
-        //     log::warn!("failed to link device as already registered in different Service Environment");
-        //     return Ok(false);
-        // }
+
+        let verification_code = provisioning_msg.provisioning_code.clone().ok_or_else(|| {
+            log::error!("ProvisionMessage missing provisioningCode (tag 4) — cannot link");
+            Error::new(ErrorKind::InvalidData, "missing provisioningCode")
+        })?;
+
+        let profile_key_b64 = provisioning_msg.profile_key.as_ref().ok_or_else(|| {
+            log::error!("ProvisionMessage missing profile_key — cannot derive UAK");
+            Error::new(ErrorKind::InvalidData, "missing profile_key")
+        })?;
+        let profile_key_bytes = URL_SAFE_NO_PAD.decode(profile_key_b64).map_err(|e| {
+            log::error!("profile_key base64 decode: {e}");
+            Error::new(ErrorKind::InvalidData, "profile_key not valid base64")
+        })?;
+
+        let password = account_attrs::generate_link_password()?;
+        let registration_id = account_attrs::generate_registration_id()?;
+        let pni_registration_id = account_attrs::generate_registration_id()?;
 
         let aci = provisioning_msg.aci;
+        let pni = provisioning_msg.pni;
+
+        let encrypted_name = DeviceNameUtil::encrypt_device_name(
+            device_name,
+            IdentityKey { key: aci.djb_private_key.key.clone() },
+        )?;
+
+        let attrs = account_attrs::build_account_attributes(
+            encrypted_name.clone(),
+            &profile_key_bytes,
+            registration_id,
+            pni_registration_id,
+        )?;
+
+        let aci_priv = decode_private_key(&aci.djb_private_key.key, "aci")?;
+        let pni_priv = decode_private_key(&pni.djb_private_key.key, "pni")?;
+
+        // Diagnostic: check that the public key we derive from each private
+        // matches the public sent in the ProvisionMessage. If these diverge,
+        // the identity key chain is broken and our signatures will never
+        // verify against the server's stored identity key (422 from
+        // PreKeySignatureValidator).
+        log_identity_chain("aci", &aci_priv, &aci.djb_identity_key.key);
+        log_identity_chain("pni", &pni_priv, &pni.djb_identity_key.key);
+
+        let generated = prekeys::generate_prekeys(&aci_priv, &pni_priv)?;
+
+        let body = rest::LinkDeviceRequestBody::from_parts(verification_code, attrs, generated);
+
+        let base_url = self.chat_url()?;
+        let response =
+            rest::put_devices_link(&base_url, &provisioning_msg.number, &password, &body)?;
+        log::info!(
+            "device linked: device_id={}, uuid={}, pni={}",
+            response.device_id,
+            response.uuid,
+            response.pni,
+        );
+        if response.uuid != aci.service_id && !aci.service_id.is_empty() {
+            log::warn!(
+                "server uuid ({}) differs from ProvisionMessage aci.service_id ({}); using ProvisionMessage value",
+                response.uuid,
+                aci.service_id,
+            );
+        }
+        if response.pni != pni.service_id && !pni.service_id.is_empty() {
+            log::warn!(
+                "server pni ({}) differs from ProvisionMessage pni.service_id ({}); using ProvisionMessage value",
+                response.pni,
+                pni.service_id,
+            );
+        }
+
+        self.set(PASSWORD_KEY, Some(&password))?;
+        self.set(DEVICE_ID_KEY, Some(&response.device_id.to_string()))?;
         self.set(ACI_IDENTITY_PRIVATE_KEY, Some(&aci.djb_private_key.key))?;
         self.set(ACI_IDENTITY_PUBLIC_KEY, Some(&aci.djb_identity_key.key))?;
         self.set(ACI_SERVICE_ID_KEY, Some(&aci.service_id))?;
-        self.set(DEVICE_ID_KEY, Some("0"))?;
-        self.set(
-            ENCRYPTED_DEVICE_NAME_KEY,
-            Some(&DeviceNameUtil::encrypt_device_name(
-                device_name,
-                aci.djb_private_key,
-            )),
-        )?;
-        self.set(IS_MULTI_DEVICE_KEY, Some(&true.to_string()))?;
-        self.set(NUMBER_KEY, Some(&provisioning_msg.number))?;
-        self.set(PASSWORD_KEY, Some("STUB 32 bytes"))?;
-        self.set(PIN_MASTER_KEY_KEY, Some(&provisioning_msg.master_key))?;
-        let pni = provisioning_msg.pni;
         self.set(PNI_IDENTITY_PRIVATE_KEY, Some(&pni.djb_private_key.key))?;
         self.set(PNI_IDENTITY_PUBLIC_KEY, Some(&pni.djb_identity_key.key))?;
-        self.set(PNI_SERVICE_ID_KEY, Some(&aci.service_id))?;
+        self.set(PNI_SERVICE_ID_KEY, Some(&pni.service_id))?;
+        self.set(ENCRYPTED_DEVICE_NAME_KEY, Some(&encrypted_name))?;
+        self.set(IS_MULTI_DEVICE_KEY, Some(&true.to_string()))?;
+        self.set(NUMBER_KEY, Some(&provisioning_msg.number))?;
+        self.set(PROFILE_KEY_KEY, Some(profile_key_b64))?;
+        if let Some(aep) = provisioning_msg.account_entropy_pool.as_deref() {
+            self.set(ACCOUNT_ENTROPY_POOL_KEY, Some(aep))?;
+        }
+        self.set(REGISTRATION_ID_KEY, Some(&registration_id.to_string()))?;
         self.set(
-            PROFILE_KEY_KEY,
-            Some(
-                &provisioning_msg
-                    .profile_key
-                    .unwrap_or_else(|| "STUB 32 bytes".to_string()),
-            ),
+            PNI_REGISTRATION_ID_KEY,
+            Some(&pni_registration_id.to_string()),
         )?;
-        self.set(REGISTERED_KEY, Some(&false.to_string()))?;
         self.set(STORAGE_KEY_KEY, None)?;
         self.set(STORE_LAST_RECEIVE_TIMESTAMP_KEY, Some("0"))?;
         self.set(STORE_MANIFEST_VERSION_KEY, Some("-1"))?;
         self.set(STORE_MANIFEST_KEY, None)?;
 
-        // TODO complete registration setup
-        // https://github.com/AsamK/signal-cli/blob/375bdb79485ec90beb9a154112821a4657740b7a/lib/src/main/java/org/asamk/signal/manager/storage/SignalAccount.java#L270-L306
-        // getRecipientTrustedResolver().resolveSelfRecipientTrusted(getSelfRecipientAddress());
-        // getSenderKeyStore().deleteAll();
-        // trustSelfIdentity(ServiceIdType.ACI);
-        // trustSelfIdentity(ServiceIdType.PNI);
-        // aciAccountData.getSessionStore().archiveAllSessions();
-        // pniAccountData.getSessionStore().archiveAllSessions();
-        // clearAllPreKeys();
-        // getKeyValueStore().storeEntry(lastRecipientsRefresh, null);
+        self.set(REGISTERED_KEY, Some(&true.to_string()))?;
 
         Ok(true)
+    }
+
+    fn chat_url(&self) -> Result<Url, Error> {
+        let host_s = self.host.to_string();
+        let base = match self.service_environment {
+            ServiceEnvironment::Live => format!("https://chat.{host_s}"),
+            ServiceEnvironment::Staging => format!("https://chat.staging.{host_s}"),
+        };
+        Url::parse(&base).map_err(|e| {
+            log::error!("invalid chat URL {base}: {e}");
+            Error::new(ErrorKind::InvalidData, "invalid chat URL")
+        })
     }
 
     pub fn host(&self) -> &Host {
@@ -329,7 +396,11 @@ impl Account {
     }
 
     pub fn is_primary_device(&self) -> bool {
-        self.device_id == SignalServiceAddress::DEFAULT_DEVICE_ID
+        // Require registered as well: a fresh (unregistered) account with
+        // device_id==0 is not a primary device; it is a pre-link placeholder.
+        // Without this guard a stuck/corrupt state could misclassify itself
+        // as primary once device_id happens to equal DEFAULT_DEVICE_ID.
+        self.is_registered() && self.device_id == SignalServiceAddress::DEFAULT_DEVICE_ID
     }
 
     pub fn is_registered(&self) -> bool {
@@ -383,6 +454,7 @@ impl Account {
                 ACI_IDENTITY_PUBLIC_KEY => Ok(self.aci_identity_public = owned_value),
                 ACI_SERVICE_ID_KEY => Ok(self.aci_service_id = owned_value),
                 DEVICE_ID_KEY => Ok(self.device_id = owned_value.unwrap().parse().unwrap()),
+                ENCRYPTED_DEVICE_NAME_KEY => Ok(self.encrypted_device_name = owned_value),
                 IS_MULTI_DEVICE_KEY => {
                     Ok(self.is_multi_device = owned_value.unwrap().parse().unwrap())
                 }
@@ -397,6 +469,7 @@ impl Account {
                 SERVICE_ENVIRONMENT_KEY => Ok(self.service_environment =
                     ServiceEnvironment::from_str(&value.unwrap()).unwrap()),
                 STORAGE_KEY_KEY => Ok(self.storage_key = owned_value),
+                ACCOUNT_ENTROPY_POOL_KEY | REGISTRATION_ID_KEY | PNI_REGISTRATION_ID_KEY => Ok(()),
                 _ => {
                     log::warn!("invalid key: {key}");
                     let _ = &self.pddb.delete_key(&self.pddb_dict, &key, None);
@@ -406,6 +479,35 @@ impl Account {
             Err(e) => Err(e),
         }
     }
+}
+
+fn log_identity_chain(label: &str, private_key: &PrivateKey, expected_pub_b64url: &str) {
+    match private_key.public_key() {
+        Ok(derived_pub) => {
+            let derived_b64 = URL_SAFE_NO_PAD.encode(derived_pub.serialize());
+            if derived_b64 == expected_pub_b64url {
+                log::info!(
+                    "{label} identity chain OK: derived pub matches ProvisionMessage pub"
+                );
+            } else {
+                log::error!(
+                    "{label} identity chain BROKEN: derived_pub={derived_b64}, provision_pub={expected_pub_b64url}"
+                );
+            }
+        }
+        Err(e) => log::error!("{label} public_key derivation failed: {e:?}"),
+    }
+}
+
+fn decode_private_key(key_b64url: &str, label: &str) -> Result<PrivateKey, Error> {
+    let bytes = URL_SAFE_NO_PAD.decode(key_b64url).map_err(|e| {
+        log::error!("{label} private key base64 decode: {e}");
+        Error::new(ErrorKind::InvalidData, "identity private key not valid base64")
+    })?;
+    PrivateKey::deserialize(&bytes).map_err(|e| {
+        log::error!("{label} private key deserialize: {e:?}");
+        Error::new(ErrorKind::InvalidData, "identity private key invalid")
+    })
 }
 
 fn get(pddb: &Pddb, dict: &str, key: &str) -> Result<Option<String>, Error> {

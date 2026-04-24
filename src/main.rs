@@ -62,7 +62,7 @@ fn wrapped_main() -> ! {
 
     let cid = xous::connect(sid).unwrap();
     chat.menu_add(MenuItem {
-        name: xous_ipc::String::from_str(t!("sigchat.menu.close", locales::LANG)),
+        name: t!("sigchat.menu.close", locales::LANG).to_string(),
         action_conn: Some(cid),
         action_opcode: SigchatOp::Menu as u32,
         action_payload: MenuPayload::Scalar([MenuOp::Noop as u32, 0, 0, 0]),
@@ -83,9 +83,11 @@ fn wrapped_main() -> ! {
                     match FromPrimitive::from_usize(event_code) {
                         Some(Event::Focus) => {
                             if first_focus {
-                                first_focus = false;
                                 match sigchat.connect() {
-                                    Ok(true) => log::info!("connected to Signal Account"),
+                                    Ok(true) => {
+                                        first_focus = false;
+                                        log::info!("connected to Signal Account");
+                                    }
                                     Ok(false) => log::info!("not connected to Signal Account"),
                                     Err(e) => {
                                         log::warn!("error while connecting to Signal Account: {e}")
