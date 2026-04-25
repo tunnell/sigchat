@@ -1,0 +1,15 @@
+2026-04-24T07:31:55-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777033918874  body=\[2026-04-24T07:31:55-05:00\]
+2026-04-24T10:32:36-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777044759941  body=\[2026-04-24T10:32:36-05:00\]\ task7-priority1-scan-verify
+2026-04-24T10:34:23-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777044866902  body=\[2026-04-24T10:34:23-05:00\]\ retry-2
+2026-04-24T10:34:31-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777044874638  body=\[2026-04-24T10:34:31-05:00\]\ retry-3
+2026-04-24T10:37:22-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777045045762  body=\[2026-04-24T10:37:22-05:00\]\ debug-scan-1
+2026-04-24T10:52:20-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777045943021  body=\[2026-04-24T10:52:20-05:00\]\ observe-scan-1777045936
+2026-04-24T10:53:04-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777045987952  body=\[2026-04-24T10:53:04-05:00\]\ observe-2
+2026-04-24T10:53:12-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777045995532  body=\[2026-04-24T10:53:12-05:00\]\ observe-3
+2026-04-24T12:23:55-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777051438571  body=\[2026-04-24T12:23:55-05:00\]\ fresh-scan-1777051432
+2026-04-24T12:47:42-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777052865395  body=\[2026-04-24T12:47:42-05:00\]\ stories-1777052859
+2026-04-24T13:24:47-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777055090752  body=\[2026-04-24T13:24:47-05:00\]\ post-relink-1777055084
+2026-04-25T13:04:43-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777140286607  body=\[2026-04-25T13:04:43-05:00\]\ auth-fix-verify-1777140280
+2026-04-25T13:09:07-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777140550087  body=\[2026-04-25T13:09:07-05:00\]\ sealed-sender-test-1777140544
+2026-04-25T13:42:59-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777142582824  body=\[2026-04-25T13:42:59-05:00\]\ decrypt-test-1777142576
+2026-04-25T13:48:29-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777142913020  body=\[2026-04-25T13:48:29-05:00\]\ hello\ from\ signal-cli\ 13:48:26
