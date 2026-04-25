@@ -3064,6 +3064,7 @@ dependencies = [
  "aes-gcm",
  "async-trait",
  "base64 0.22.1",
+ "blitstr2",
  "cbc",
  "chat",
  "codec",
