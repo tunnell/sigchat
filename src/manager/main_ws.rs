@@ -604,7 +604,16 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
 
 // ---- Content delivery -------------------------------------------------------
 
+/// Strip Signal's application-level padding: content_bytes + 0x80 + 0x00*N.
+/// libsignal-protocol strips AES-CBC crypto padding but not this layer.
+fn strip_signal_padding(mut plaintext: Vec<u8>) -> Vec<u8> {
+    while plaintext.last() == Some(&0x00) { plaintext.pop(); }
+    if plaintext.last() == Some(&0x80) { plaintext.pop(); }
+    plaintext
+}
+
 fn deliver_content(plaintext: Vec<u8>, remote_addr: &ProtocolAddress, server_ts: u64, chat_cid: CID) {
+    let plaintext = strip_signal_padding(plaintext);
     let content = match ContentProto::decode(plaintext.as_slice()) {
         Ok(c) => c,
         Err(e) => {
