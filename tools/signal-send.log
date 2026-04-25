@@ -13,3 +13,6 @@
 2026-04-25T13:09:07-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777140550087  body=\[2026-04-25T13:09:07-05:00\]\ sealed-sender-test-1777140544
 2026-04-25T13:42:59-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777142582824  body=\[2026-04-25T13:42:59-05:00\]\ decrypt-test-1777142576
 2026-04-25T13:48:29-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777142913020  body=\[2026-04-25T13:48:29-05:00\]\ hello\ from\ signal-cli\ 13:48:26
+2026-04-25T15:38:29-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777149512546  body=\[2026-04-25T15:38:29-05:00\]\ display-verify-1777149506
+2026-04-25T15:40:40-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777149643320  body=\[2026-04-25T15:40:40-05:00\]\ live-test-1777149637
+2026-04-25T15:49:30-05:00  SENT  sender=+31638295471  recipient=PrecursorEmulator.02  sig_ts=1777150173952  body=\[2026-04-25T15:49:30-05:00\]\ display-fix-1777150167
