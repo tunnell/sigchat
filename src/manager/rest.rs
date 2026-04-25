@@ -316,7 +316,9 @@ mod tests {
     #[test]
     fn body_serializes_with_expected_keys() {
         use crate::manager::account_attrs::build_account_attributes;
-        use crate::manager::prekeys::{KyberPreKeyJson, Prekeys, SignedPreKeyJson};
+        use crate::manager::prekeys;
+        use libsignal_protocol::IdentityKeyPair;
+        use rand::TryRngCore as _;
 
         let attrs = build_account_attributes(
             "name".to_string(),
@@ -325,29 +327,12 @@ mod tests {
             2,
         )
         .expect("attrs");
-        let prekeys = Prekeys {
-            aci_signed: SignedPreKeyJson {
-                key_id: 10,
-                public_key_b64url: "a".into(),
-                signature_b64url: "b".into(),
-            },
-            pni_signed: SignedPreKeyJson {
-                key_id: 11,
-                public_key_b64url: "c".into(),
-                signature_b64url: "d".into(),
-            },
-            aci_kyber_last_resort: KyberPreKeyJson {
-                key_id: 12,
-                public_key_b64url: "e".into(),
-                signature_b64url: "f".into(),
-            },
-            pni_kyber_last_resort: KyberPreKeyJson {
-                key_id: 13,
-                public_key_b64url: "g".into(),
-                signature_b64url: "h".into(),
-            },
-        };
-        let body = LinkDeviceRequestBody::from_parts("VC".into(), attrs, prekeys);
+        let mut rng = rand::rngs::OsRng.unwrap_err();
+        let aci_pair = IdentityKeyPair::generate(&mut rng);
+        let pni_pair = IdentityKeyPair::generate(&mut rng);
+        let prekeys = prekeys::generate_prekeys(aci_pair.private_key(), pni_pair.private_key())
+            .expect("generate_prekeys");
+        let body = LinkDeviceRequestBody::from_parts("VC".into(), attrs, &prekeys);
         let json = serde_json::to_value(&body).expect("serialize");
         for key in [
             "verificationCode",
@@ -362,7 +347,11 @@ mod tests {
         // gcmToken is None and must be omitted (not null) per spec §4.
         assert!(json.get("gcmToken").is_none());
         assert_eq!(json["verificationCode"], serde_json::json!("VC"));
-        assert_eq!(json["aciSignedPreKey"]["keyId"], serde_json::json!(10));
-        assert_eq!(json["aciSignedPreKey"]["publicKey"], serde_json::json!("a"));
+        // keyId is a random u32 — just check it's present and in valid range.
+        let key_id = json["aciSignedPreKey"]["keyId"].as_u64().expect("keyId u64");
+        assert!(key_id >= 1 && key_id <= 0x00FF_FFFF, "keyId out of Medium range");
+        // publicKey is standard-no-pad base64 of a 33-byte EC key = 44 chars.
+        let pk = json["aciSignedPreKey"]["publicKey"].as_str().expect("publicKey");
+        assert_eq!(pk.len(), 44, "publicKey wrong length");
     }
 }
