@@ -382,6 +382,21 @@ impl<'a> SigChat<'a> {
             .expect("failed to set dialogue");
     }
 
+    pub fn post(&self, text: &str) {
+        self.chat.set_busy_state(true);
+        self.chat.set_status_text("sending...");
+        log::info!("post: '{}'", text);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        chat::cf_post_add(self.chat.cid(), "me", ts, text);
+        chat::cf_redraw(self.chat.cid());
+        // TODO Task 8 Phase 2: Signal protocol send — encrypt, build
+        // OutgoingMessageEntity, PUT /v1/messages/{uuid}, handle 409/410.
+        self.chat.set_busy_state(false);
+    }
+
     pub fn help(&self) {
         self.chat.help();
     }
