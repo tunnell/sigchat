@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use rustls::{ClientConnection, StreamOwned};
 use std::io::{self, Error, ErrorKind};
 use std::net::TcpStream;
@@ -21,16 +22,24 @@ impl SignalWS {
         device_id: u32,
         password: &str,
     ) -> Result<Self, Error> {
-        let mut url = Url::parse(&format!("wss://{}/v1/websocket/", host))
+        let url = Url::parse(&format!("wss://{}/v1/websocket/", host))
             .map_err(|_| Error::new(ErrorKind::InvalidInput, "invalid host for ws url"))?;
-        url.query_pairs_mut()
-            .append_pair("login", &format!("{}.{}", aci_service_id, device_id))
-            .append_pair("password", password);
-        Self::new(&url)
+        // Signal-Server's WebSocketAccountAuthenticator reads only the
+        // Authorization header; query-param credentials are silently ignored,
+        // leaving the connection unauthenticated and the message-delivery
+        // subscription never created. Reference: WebSocketAccountAuthenticator.java:33-46.
+        let login = format!("{}.{}", aci_service_id, device_id);
+        let auth = BASE64.encode(format!("{}:{}", login, password));
+        Self::new_with_auth(&url, &auth)
+    }
+
+    fn new_with_auth(url: &Url, auth: &str) -> Result<Self, Error> {
+        let ws = SignalWS::connect(url, Some(auth))?;
+        Ok(Self { ws })
     }
 
     fn new(url: &Url) -> Result<Self, Error> {
-        let ws = SignalWS::connect(url)?;
+        let ws = SignalWS::connect(url, None)?;
         Ok(Self { ws })
     }
 
@@ -118,7 +127,10 @@ impl SignalWS {
         }
     }
 
-    fn connect(url: &Url) -> Result<WebSocket<StreamOwned<ClientConnection, TcpStream>>, Error> {
+    fn connect(
+        url: &Url,
+        auth: Option<&str>,
+    ) -> Result<WebSocket<StreamOwned<ClientConnection, TcpStream>>, Error> {
         log::info!("attempting websocket connection to {}", url.as_str());
         let host = url.host_str().expect("failed to extract host from url");
         let sock = TcpStream::connect((host, 443))?;
@@ -126,12 +138,7 @@ impl SignalWS {
         let xtls = Tls::new();
         let tls_stream = xtls.stream_owned(host, sock)?;
         log::info!("tls configured");
-        // Build the upgrade request explicitly so we can attach
-        // X-Signal-Receive-Stories. libsignal-service-rs always sets this
-        // header on the authenticated receive WS; without it Signal's server
-        // accepts the connection and replies to app-layer keepalives but
-        // does not push queued messages. Reference: receiver.rs:24-42.
-        let request = tungstenite::http::Request::builder()
+        let mut builder = tungstenite::http::Request::builder()
             .method("GET")
             .uri(url.as_str())
             .header("Host", host)
@@ -139,7 +146,11 @@ impl SignalWS {
             .header("Upgrade", "websocket")
             .header("Sec-WebSocket-Version", "13")
             .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
-            .header("X-Signal-Receive-Stories", "true")
+            .header("X-Signal-Receive-Stories", "true");
+        if let Some(credentials) = auth {
+            builder = builder.header("Authorization", format!("Basic {}", credentials));
+        }
+        let request = builder
             .body(())
             .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("build ws upgrade req: {e}")))?;
         match tungstenite::client(request, tls_stream) {
