@@ -87,6 +87,7 @@ fn wrapped_main() -> ! {
                     Ok(false) => log::warn!("start_receive returned false"),
                     Err(e) => log::warn!("start_receive failed: {e}"),
                 }
+
             }
             Ok(false) => log::info!("not connected to Signal Account"),
             Err(e) => log::warn!("error while connecting to Signal Account: {e}"),
@@ -153,8 +154,8 @@ fn wrapped_main() -> ! {
             }
             _ => (),
         }
-        if let Some(_post) = user_post {
-            //sigchat.post(&post);
+        if let Some(post) = user_post {
+            sigchat.post(&post);
             user_post = None;
         }
     }
