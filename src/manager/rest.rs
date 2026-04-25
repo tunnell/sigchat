@@ -73,15 +73,30 @@ impl LinkDeviceRequestBody {
     pub fn from_parts(
         verification_code: String,
         account_attributes: AccountAttributes,
-        prekeys: Prekeys,
+        prekeys: &Prekeys,
     ) -> Self {
+        use crate::manager::prekeys::{KyberPreKeyJson, SignedPreKeyJson};
+        fn spk_to_entity(k: &SignedPreKeyJson) -> SignedPreKeyEntity {
+            SignedPreKeyEntity {
+                key_id: k.key_id,
+                public_key: k.public_key_b64url.clone(),
+                signature: k.signature_b64url.clone(),
+            }
+        }
+        fn kpk_to_entity(k: &KyberPreKeyJson) -> KyberPreKeyEntity {
+            KyberPreKeyEntity {
+                key_id: k.key_id,
+                public_key: k.public_key_b64url.clone(),
+                signature: k.signature_b64url.clone(),
+            }
+        }
         Self {
             verification_code,
             account_attributes,
-            aci_signed_pre_key: prekeys.aci_signed.into(),
-            pni_signed_pre_key: prekeys.pni_signed.into(),
-            aci_pq_last_resort_pre_key: prekeys.aci_kyber_last_resort.into(),
-            pni_pq_last_resort_pre_key: prekeys.pni_kyber_last_resort.into(),
+            aci_signed_pre_key: spk_to_entity(&prekeys.aci_signed),
+            pni_signed_pre_key: spk_to_entity(&prekeys.pni_signed),
+            aci_pq_last_resort_pre_key: kpk_to_entity(&prekeys.aci_kyber_last_resort),
+            pni_pq_last_resort_pre_key: kpk_to_entity(&prekeys.pni_kyber_last_resort),
             gcm_token: None,
         }
     }

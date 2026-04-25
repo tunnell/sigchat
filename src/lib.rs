@@ -56,6 +56,11 @@ impl<'a> SigChat<'a> {
         }
     }
 
+    /// Returns true if a registered account is already loaded and ready to connect.
+    pub fn is_ready(&self) -> bool {
+        self.manager.is_some()
+    }
+
     /// Connect to the Signal servers
     ///
     /// The process first waits for an active WiFi connection, and then

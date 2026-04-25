@@ -73,6 +73,26 @@ fn wrapped_main() -> ! {
     let mut sigchat = SigChat::new(&chat);
     let mut first_focus = true;
     let mut user_post: Option<String> = None;
+
+    // Auto-connect if the account is already registered (e.g. headless scan).
+    // This fires the same logic as the first Event::Focus would have.
+    if sigchat.is_ready() {
+        first_focus = false;
+        match sigchat.connect() {
+            Ok(true) => {
+                log::info!("connected to Signal Account");
+                sigchat.dialogue_set(None);
+                match sigchat.start_receive(chat.cid()) {
+                    Ok(true) => log::info!("receive worker started"),
+                    Ok(false) => log::warn!("start_receive returned false"),
+                    Err(e) => log::warn!("start_receive failed: {e}"),
+                }
+            }
+            Ok(false) => log::info!("not connected to Signal Account"),
+            Err(e) => log::warn!("error while connecting to Signal Account: {e}"),
+        }
+    }
+
     loop {
         let msg = xous::receive_message(sid).unwrap();
         log::debug!("got message {:?}", msg);
