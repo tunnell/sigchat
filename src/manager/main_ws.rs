@@ -623,7 +623,15 @@ fn deliver_content(plaintext: Vec<u8>, remote_addr: &ProtocolAddress, server_ts:
     };
 
     let delivered = if let Some(dm) = content.data_message {
-        deliver_data_message(dm, remote_addr.name(), server_ts, chat_cid)
+        let was_delivered = deliver_data_message(dm, remote_addr.name(), server_ts, chat_cid);
+        if was_delivered {
+            // Persist this peer as the V1 default outgoing recipient so that
+            // SigChat::post() has somewhere to send a reply.
+            if let Err(e) = crate::manager::outgoing::set_current_recipient(remote_addr) {
+                log::warn!("main_ws: set_current_recipient failed: {e}");
+            }
+        }
+        was_delivered
     } else if let Some(sync) = content.sync_message {
         deliver_sync_message(sync, server_ts, chat_cid)
     } else {
