@@ -102,11 +102,30 @@ impl LinkDeviceRequestBody {
     }
 }
 
+fn de_u32_from_str_or_num<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    use serde::de::{self, Visitor};
+    struct U32OrStr;
+    impl<'de> Visitor<'de> for U32OrStr {
+        type Value = u32;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("u32 or decimal string")
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<u32, E> {
+            use std::convert::TryFrom as _;
+            u32::try_from(v).map_err(de::Error::custom)
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<u32, E> {
+            v.parse().map_err(de::Error::custom)
+        }
+    }
+    d.deserialize_any(U32OrStr)
+}
+
 #[derive(Deserialize, Debug)]
 pub struct LinkDeviceResponse {
     pub uuid: String,
     pub pni: String,
-    #[serde(rename = "deviceId")]
+    #[serde(rename = "deviceId", deserialize_with = "de_u32_from_str_or_num")]
     pub device_id: u32,
 }
 
