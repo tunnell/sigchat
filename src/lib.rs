@@ -390,10 +390,38 @@ impl<'a> SigChat<'a> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
+
+        // Local echo first — Signal's WS does not push back the sender's own
+        // messages, so the local store is the only place "me" appears.
         chat::cf_post_add(self.chat.cid(), "me", ts, text);
         chat::cf_redraw(self.chat.cid());
-        // TODO Task 8 Phase 2: Signal protocol send — encrypt, build
-        // OutgoingMessageEntity, PUT /v1/messages/{uuid}, handle 409/410.
+
+        // Phase 2a: encrypt outgoing message. Phase 2b will replace the
+        // log line below with PUT /v1/messages/{uuid}.
+        match crate::manager::outgoing::current_recipient() {
+            Ok(recipient) => {
+                match crate::manager::outgoing::build_encrypted_message(text, ts, &recipient) {
+                    Ok(enc) => {
+                        log::info!(
+                            "post: encrypted {} bytes type={} dest_device={} dest_reg_id={} for {}",
+                            enc.ciphertext_bytes.len(),
+                            enc.ciphertext_type,
+                            enc.destination_device_id,
+                            enc.destination_registration_id,
+                            recipient.name(),
+                        );
+                        // TODO Task 8 Phase 2b: PUT /v1/messages/{uuid} with this envelope.
+                    }
+                    Err(e) => {
+                        log::warn!("post: encrypt failed for {}: {e}", recipient.name());
+                    }
+                }
+            }
+            Err(e) => {
+                log::info!("post: no outgoing recipient ({e}); local-echo only");
+            }
+        }
+
         self.chat.set_busy_state(false);
     }
 
