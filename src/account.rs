@@ -505,7 +505,12 @@ impl Account {
                 SERVICE_ENVIRONMENT_KEY => Ok(self.service_environment =
                     ServiceEnvironment::from_str(&value.unwrap()).unwrap()),
                 STORAGE_KEY_KEY => Ok(self.storage_key = owned_value),
-                ACCOUNT_ENTROPY_POOL_KEY | REGISTRATION_ID_KEY | PNI_REGISTRATION_ID_KEY => Ok(()),
+                ACCOUNT_ENTROPY_POOL_KEY
+                | REGISTRATION_ID_KEY
+                | PNI_REGISTRATION_ID_KEY
+                | STORE_LAST_RECEIVE_TIMESTAMP_KEY
+                | STORE_MANIFEST_VERSION_KEY
+                | STORE_MANIFEST_KEY => Ok(()),
                 _ => {
                     log::warn!("invalid key: {key}");
                     let _ = &self.pddb.delete_key(&self.pddb_dict, &key, None);
