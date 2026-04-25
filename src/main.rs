@@ -81,7 +81,7 @@ fn wrapped_main() -> ! {
         match sigchat.connect() {
             Ok(true) => {
                 log::info!("connected to Signal Account");
-                sigchat.dialogue_set(None);
+                sigchat.dialogue_set(Some("default"));
                 match sigchat.start_receive(chat.cid()) {
                     Ok(true) => log::info!("receive worker started"),
                     Ok(false) => log::warn!("start_receive returned false"),
@@ -107,7 +107,7 @@ fn wrapped_main() -> ! {
                                     Ok(true) => {
                                         first_focus = false;
                                         log::info!("connected to Signal Account");
-                                        sigchat.dialogue_set(None);
+                                        sigchat.dialogue_set(Some("default"));
                                         match sigchat.start_receive(chat.cid()) {
                                             Ok(true) => log::info!("receive worker started"),
                                             Ok(false) => log::warn!("start_receive returned false"),
