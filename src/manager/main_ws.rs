@@ -1,8 +1,9 @@
 //! Authenticated main WebSocket worker for Signal message receive.
 //!
-//! Connects to wss://{host}/v1/websocket/?login={aci}.{device_id}&password={password},
-//! decrypts incoming envelopes, parses Content proto, and delivers text to the
-//! Chat UI. Reconnects automatically with 2–64s exponential backoff on disconnect.
+//! Connects to wss://{host}/v1/websocket/ with an Authorization: Basic header
+//! (login="{aci}.{device_id}", password as-is), decrypts incoming envelopes,
+//! parses Content proto, and delivers text to the Chat UI.
+//! Reconnects automatically with 2–64s exponential backoff on disconnect.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -10,9 +11,12 @@
 
 use std::convert::TryFrom as _;
 use futures::executor::block_on;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use libsignal_protocol::{
-    DeviceId, PreKeySignalMessage, ProtocolAddress, SignalMessage,
+    CiphertextMessageType, DeviceId, PreKeySignalMessage, ProtocolAddress, PublicKey,
+    SignalMessage, Timestamp,
     message_decrypt_prekey, message_decrypt_signal,
+    sealed_sender_decrypt_to_usmc,
 };
 use prost::Message as ProstMessage;
 use rand::TryRngCore as _;
@@ -50,6 +54,14 @@ const WS_TYPE_RESPONSE: i32 = 2;
 
 const ENVELOPE_CIPHERTEXT: i32 = 1;
 const ENVELOPE_PREKEY_BUNDLE: i32 = 3;
+const ENVELOPE_UNIDENTIFIED_SENDER: i32 = 6;
+
+// Signal production sealed-sender trust roots (from libsignal-service-rs configuration.rs).
+// SenderCertificate is validated against both; rejection by all roots = drop.
+const SEALED_SENDER_TRUST_ROOTS: &[&str] = &[
+    "BXu6QIKVz5MA8gstzfOgRQGqyLqOwNKHL6INkv3IHWMF",
+    "BUkY0I+9+oPgDCn4+Ac6Iu813yvqkDr/ga8DzLxFxuk6",
+];
 
 const RECONNECT_BACKOFF_INITIAL_MS: u64 = 2_000;
 const RECONNECT_BACKOFF_MAX_MS: u64 = 64_000;
@@ -413,16 +425,6 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
         }
     };
 
-    if source_dev == 0 || source_dev > 127 {
-        log::warn!("main_ws: source_device {source_dev} out of range (1..=127), skipping");
-        return;
-    }
-    let sender_device = match DeviceId::new(source_dev as u8) {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    let remote_addr = ProtocolAddress::new(source_id, sender_device);
-
     let pddb_id = pddb::Pddb::new(); pddb_id.try_mount();
     let pddb_pk = pddb::Pddb::new(); pddb_pk.try_mount();
     let pddb_spk = pddb::Pddb::new(); pddb_spk.try_mount();
@@ -435,6 +437,97 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
     let mut kyber_pre_key_store = PddbKyberPreKeyStore::new(pddb_kpk, KYBER_PREKEY_DICT);
     let mut session_store = PddbSessionStore::new(pddb_ses, SESSION_DICT);
     let mut rng = rand::rngs::OsRng.unwrap_err();
+
+    // Sealed sender: sender identity is encrypted inside the ciphertext.
+    // Decrypt to USMC first to reveal the actual sender, then decrypt inner message.
+    if env_type == ENVELOPE_UNIDENTIFIED_SENDER {
+        let usmc = match block_on(sealed_sender_decrypt_to_usmc(
+            content.as_ref(),
+            &identity_store,
+        )) {
+            Ok(u) => u,
+            Err(e) => {
+                log::warn!("main_ws: sealed_sender_decrypt_to_usmc failed: {e:?}");
+                return;
+            }
+        };
+
+        let trust_roots: Vec<PublicKey> = SEALED_SENDER_TRUST_ROOTS
+            .iter()
+            .filter_map(|b64| BASE64.decode(b64).ok())
+            .filter_map(|raw| PublicKey::deserialize(&raw).ok())
+            .collect();
+
+        let sender_cert = match usmc.sender() {
+            Ok(c) => c,
+            Err(e) => { log::warn!("main_ws: usmc.sender() failed: {e:?}"); return; }
+        };
+        match sender_cert.validate_with_trust_roots(&trust_roots, Timestamp::from_epoch_millis(ts)) {
+            Ok(true) => {}
+            Ok(false) => { log::warn!("main_ws: sealed sender cert invalid — dropping"); return; }
+            Err(e) => { log::warn!("main_ws: sealed sender cert error: {e:?}"); return; }
+        }
+
+        let sender_uuid = match sender_cert.sender_uuid() {
+            Ok(u) => u.to_string(),
+            Err(e) => { log::warn!("main_ws: sender_uuid: {e:?}"); return; }
+        };
+        let sender_dev_id = match sender_cert.sender_device_id() {
+            Ok(d) => d,
+            Err(e) => { log::warn!("main_ws: sender_device_id: {e:?}"); return; }
+        };
+        let remote_addr = ProtocolAddress::new(sender_uuid, sender_dev_id);
+
+        let plaintext = match usmc.msg_type() {
+            Ok(CiphertextMessageType::PreKey) => {
+                let msg = match PreKeySignalMessage::try_from(usmc.contents().unwrap_or(&[])) {
+                    Ok(m) => m,
+                    Err(e) => { log::warn!("main_ws: SS PreKey parse: {e:?}"); return; }
+                };
+                match block_on(message_decrypt_prekey(
+                    &msg, &remote_addr, local_addr,
+                    &mut session_store, &mut identity_store,
+                    &mut pre_key_store, &signed_pre_key_store,
+                    &mut kyber_pre_key_store, &mut rng,
+                )) {
+                    Ok(pt) => { log::info!("main_ws: SS PREKEY decrypted {} bytes from {}", pt.len(), remote_addr.name()); pt }
+                    Err(e) => { log::warn!("main_ws: SS PREKEY decrypt failed from {}: {e:?}", remote_addr.name()); return; }
+                }
+            }
+            Ok(CiphertextMessageType::Whisper) => {
+                let msg = match SignalMessage::try_from(usmc.contents().unwrap_or(&[])) {
+                    Ok(m) => m,
+                    Err(e) => { log::warn!("main_ws: SS Whisper parse: {e:?}"); return; }
+                };
+                match block_on(message_decrypt_signal(
+                    &msg, &remote_addr,
+                    &mut session_store, &mut identity_store, &mut rng,
+                )) {
+                    Ok(pt) => { log::info!("main_ws: SS CIPHERTEXT decrypted {} bytes from {}", pt.len(), remote_addr.name()); pt }
+                    Err(e) => { log::warn!("main_ws: SS CIPHERTEXT decrypt failed from {}: {e:?}", remote_addr.name()); return; }
+                }
+            }
+            Ok(other) => {
+                log::warn!("main_ws: SS inner msg_type {:?} not supported — dropping", other);
+                return;
+            }
+            Err(e) => { log::warn!("main_ws: SS msg_type: {e:?}"); return; }
+        };
+
+        deliver_content(plaintext, &remote_addr, ts, chat_cid);
+        return;
+    }
+
+    // Non-sealed-sender: sender is in the outer envelope.
+    if source_dev == 0 || source_dev > 127 {
+        log::warn!("main_ws: source_device {source_dev} out of range (1..=127), skipping");
+        return;
+    }
+    let sender_device = match DeviceId::new(source_dev as u8) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let remote_addr = ProtocolAddress::new(source_id, sender_device);
 
     let plaintext = match env_type {
         ENVELOPE_PREKEY_BUNDLE => {

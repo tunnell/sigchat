@@ -326,7 +326,7 @@ impl Account {
 
         let generated = prekeys::generate_prekeys(&aci_priv, &pni_priv)?;
 
-        let body = rest::LinkDeviceRequestBody::from_parts(verification_code, attrs, generated);
+        let body = rest::LinkDeviceRequestBody::from_parts(verification_code, attrs, &generated);
 
         let base_url = self.chat_url()?;
         let response =
@@ -378,6 +378,10 @@ impl Account {
         self.set(STORE_MANIFEST_KEY, None)?;
 
         self.set(REGISTERED_KEY, Some(&true.to_string()))?;
+
+        // Save prekey private-key records to pddb stores so incoming messages
+        // can be decrypted. Must happen AFTER a successful REST link (above).
+        prekeys::save_to_pddb(&generated)?;
 
         Ok(true)
     }
