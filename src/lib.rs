@@ -1,8 +1,10 @@
 mod account;
 pub mod api;
-mod manager;
+pub mod manager;
+#[cfg(target_os = "xous")]
+mod getrandom_xous;
 
-use crate::account::{Account, ServiceEnvironment, DEFAULT_HOST};
+use crate::account::{Account, ServiceEnvironment};
 use crate::manager::{Config, Manager, TrustMode};
 pub use api::*;
 use chat::Chat;
@@ -23,6 +25,13 @@ pub const HOSTED_MODE: bool = true;
 #[cfg(target_os = "xous")]
 pub const HOSTED_MODE: bool = false;
 
+fn signal_config() -> Config {
+    Config::new(
+        Host::parse("signal.org").expect("hardcoded host is valid"),
+        ServiceEnvironment::Live,
+    )
+}
+
 //#[derive(Debug)]
 pub struct SigChat<'a> {
     chat: &'a Chat,
@@ -39,12 +48,17 @@ impl<'a> SigChat<'a> {
         SigChat {
             chat: chat,
             manager: match Account::read(SIGCHAT_ACCOUNT) {
-                Ok(account) => Some(Manager::new(account, TrustMode::OnFirstUse)),
-                Err(_) => None,
+                Ok(account) if account.is_registered() => Some(Manager::new(account, TrustMode::OnFirstUse)),
+                _ => None,
             },
             netmgr: net::NetManager::new(),
             modals: modals,
         }
+    }
+
+    /// Returns true if a registered account is already loaded and ready to connect.
+    pub fn is_ready(&self) -> bool {
+        self.manager.is_some()
     }
 
     /// Connect to the Signal servers
@@ -63,8 +77,14 @@ impl<'a> SigChat<'a> {
             if self.manager.is_none() {
                 log::info!("Setting up Signal Account Manager");
                 let account = match Account::read(SIGCHAT_ACCOUNT) {
-                    Ok(account) => account,
-                    Err(_) => self.account_setup()?,
+                    Ok(account) if account.is_registered() => account,
+                    _ => match self.account_setup() {
+                        Ok(a) => a,
+                        Err(e) => {
+                            self.chat.set_status_text(t!("sigchat.status.offline", locales::LANG));
+                            return Err(e);
+                        }
+                    },
                 };
                 self.chat
                     .set_status_text(t!("sigchat.status.connecting", locales::LANG));
@@ -106,7 +126,6 @@ impl<'a> SigChat<'a> {
     ///
     fn account_setup(&mut self) -> Result<Account, Error> {
         log::info!("Attempting to setup a Signal Account");
-        let service_environment = ServiceEnvironment::Staging;
         self.modals
             .add_list_item(t!("sigchat.account.link", locales::LANG))
             .expect("failed add list item");
@@ -122,8 +141,7 @@ impl<'a> SigChat<'a> {
         match self.modals.get_radio_index() {
             Ok(index) => match index {
                 0 => {
-                    let host = self.host_modal();
-                    let config = Config::new(host, service_environment);
+                    let config = signal_config();
                     match self.probe_host(config.url()) {
                         true => Ok(self.account_link(&config)?),
                         false => Err(Error::new(
@@ -133,8 +151,7 @@ impl<'a> SigChat<'a> {
                     }
                 }
                 1 => {
-                    let host = self.host_modal();
-                    let config = Config::new(host, service_environment);
+                    let config = signal_config();
                     match self.probe_host(config.url()) {
                         true => Ok(self.account_register(&config)?),
                         false => Err(Error::new(
@@ -160,44 +177,6 @@ impl<'a> SigChat<'a> {
                 ))
             }
         }
-    }
-
-    /// Prompt for a host name from the user
-    ///
-    /// # Returns
-    ///
-    /// the host provided by the user
-    ///
-    fn host_modal(&self) -> Host {
-        let mut host = None;
-        while host.is_none() {
-            host = match self
-                .modals
-                .alert_builder(t!("sigchat.account.host.name", locales::LANG))
-                .field(Some(DEFAULT_HOST.to_string()), None)
-                .build()
-            {
-                Ok(text) => match Host::parse(&text.content()[0].content.to_string()) {
-                    Ok(host) => match host {
-                        Host::Domain(..) => Some(host),
-                        _ => {
-                            self.modals
-                                .show_notification(t!("sigchat.host.invalid", locales::LANG), None)
-                                .expect("notification failed");
-                            None
-                        }
-                    },
-                    Err(_) => {
-                        self.modals
-                            .show_notification(t!("sigchat.host.invalid", locales::LANG), None)
-                            .expect("notification failed");
-                        None
-                    }
-                },
-                _ => Host::parse(DEFAULT_HOST).ok(),
-            }
-        }
-        host.unwrap()
     }
 
     /// Probe host for tls Certificate Authority chain of trust
@@ -366,14 +345,30 @@ impl<'a> SigChat<'a> {
             .alert_builder(t!("sigchat.number.title", locales::LANG));
         let builder = builder.field(Some(t!("sigchat.number", locales::LANG).to_string()), None);
         match builder.build() {
-            Ok(payloads) => match payloads.content()[0].content.as_str() {
-                Ok(number) => {
-                    log::info!("registration phone number = {:?}", number);
-                    Ok(number.to_string())
-                }
-                Err(e) => Err(Error::new(ErrorKind::InvalidData, e)),
-            },
+            Ok(payloads) => {
+                let number = payloads.content()[0].content.to_string();
+                log::info!("registration phone number = {:?}", number);
+                Ok(number)
+            }
             Err(_) => Err(Error::from(ErrorKind::ConnectionRefused)),
+        }
+    }
+
+    /// Spawn the authenticated receive worker and wire it to the Chat UI.
+    ///
+    /// Must be called after a successful `connect()`. `chat_cid` is obtained
+    /// from `chat.cid()` in the main binary; it is `Copy` (u32 alias) so it
+    /// can be passed freely between threads.
+    pub fn start_receive(&self, chat_cid: xous::CID) -> Result<bool, Error> {
+        match &self.manager {
+            Some(mgr) => mgr
+                .start_receive(chat_cid)
+                .map(|_| true)
+                .map_err(|e| Error::new(ErrorKind::Other, format!("start_receive: {e}"))),
+            None => {
+                log::warn!("start_receive called before connect — no manager");
+                Ok(false)
+            }
         }
     }
 
