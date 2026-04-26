@@ -396,24 +396,19 @@ impl<'a> SigChat<'a> {
         chat::cf_post_add(self.chat.cid(), "me", ts, text);
         chat::cf_redraw(self.chat.cid());
 
-        // Phase 2a: encrypt outgoing message. Phase 2b will replace the
-        // log line below with PUT /v1/messages/{uuid}.
+        // Phase 2b: encrypt + submit to /v1/messages/{uuid} with bounded
+        // retry on 409 (mismatched devices) and 410 (stale devices). Local
+        // echo above stays in the UI regardless of send outcome — there is
+        // no "failed to send" UI marker yet.
         match crate::manager::outgoing::current_recipient() {
             Ok(recipient) => {
-                match crate::manager::outgoing::build_encrypted_message(text, ts, &recipient) {
-                    Ok(enc) => {
-                        log::info!(
-                            "post: encrypted {} bytes type={} dest_device={} dest_reg_id={} for {}",
-                            enc.ciphertext_bytes.len(),
-                            enc.ciphertext_type,
-                            enc.destination_device_id,
-                            enc.destination_registration_id,
-                            recipient.name(),
-                        );
-                        // TODO Task 8 Phase 2b: PUT /v1/messages/{uuid} with this envelope.
+                let mut http = crate::manager::send::UreqHttpClient::new();
+                match crate::manager::send::submit_with_retry(text, ts, &recipient, &mut http) {
+                    Ok(()) => {
+                        log::info!("post: sent to {}", recipient.name());
                     }
                     Err(e) => {
-                        log::warn!("post: encrypt failed for {}: {e}", recipient.name());
+                        log::warn!("post: send failed for {}: {e}", recipient.name());
                     }
                 }
             }

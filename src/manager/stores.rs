@@ -344,6 +344,15 @@ impl PddbSessionStore {
     pub fn new(pddb: pddb::Pddb, dict: &'static str) -> Self {
         Self { pddb, dict }
     }
+
+    /// Drop the session record for `address`. Used by the send path on 409
+    /// (extra devices) and 410 (stale devices) so re-encryption of the next
+    /// attempt does not target a device the server has reported gone or
+    /// changed. Missing key on delete is treated as success.
+    pub fn delete_session(&self, address: &ProtocolAddress) {
+        let key = format!("{}.{}", address.name(), address.device_id());
+        let _ = self.pddb.delete_key(self.dict, &key, None);
+    }
 }
 
 #[async_trait(?Send)]
