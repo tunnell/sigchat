@@ -2,9 +2,13 @@ name: "Setup Xous Rust toolchain"
 description: "Pinned stable Rust + sideloaded riscv32imac-unknown-xous-elf libstd"
 inputs:
   rust-version:
-    description: "Stable Rust version supported by betrusted-io/rust"
+    description: "Rust toolchain version (used for dtolnay/rust-toolchain and zip filename)"
     required: true
-    default: "1.85.0"
+    default: "1.95.0"
+  release-tag:
+    description: "betrusted-io/rust release tag (e.g. 1.95.0.1); defaults to rust-version + .1"
+    required: false
+    default: "1.95.0.1"
 runs:
   using: "composite"
   steps:
@@ -21,14 +25,17 @@ runs:
       shell: bash
       env:
         RUST_VERSION: ${{ inputs.rust-version }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
       run: |
         set -euxo pipefail
         SYSROOT="$(rustc --print sysroot)"
         TARGET_DIR="$SYSROOT/lib/rustlib/riscv32imac-unknown-xous-elf"
         if [ ! -d "$TARGET_DIR" ]; then
           cd "$SYSROOT"
+          # Release tag (e.g. 1.95.0.1) differs from toolchain version (1.95.0)
+          # used in the zip filename. Both inputs are required to form the URL.
           curl -sSfL -o /tmp/xous-std.zip \
-            "https://github.com/betrusted-io/rust/releases/download/${RUST_VERSION}/riscv32imac-unknown-xous_${RUST_VERSION}.zip"
+            "https://github.com/betrusted-io/rust/releases/download/${RELEASE_TAG}/riscv32imac-unknown-xous_${RUST_VERSION}.zip"
           unzip -o /tmp/xous-std.zip
           rm /tmp/xous-std.zip
         fi

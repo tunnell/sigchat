@@ -16,13 +16,21 @@ permissions:
 jobs:
   budget:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       TARGET: riscv32imac-unknown-xous-elf
       BIN_NAME: sigchat
       FEATURES: precursor
+      XOUS_CORE_BRANCH: feat/05-curve25519-dalek-4.1.3
     steps:
       - uses: actions/checkout@v4
+
+      - name: Clone xous-core (required by local path deps in Cargo.toml)
+        run: |
+          git clone --depth=1 \
+            --branch $XOUS_CORE_BRANCH \
+            https://github.com/tunnell/xous-core.git \
+            ${{ github.workspace }}/../xous-core
 
       - uses: ./.github/actions/setup-xous
 
