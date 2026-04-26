@@ -58,6 +58,7 @@ base64 = "0.22"
 prost = "0.14"
 serde_json = "1.0"
 futures = { version = "0.3", features = ["executor"], default-features = false }
+utralib = { version = "0.1.27", optional = true, default-features = false }
 
 # getrandom 0.3 is only used on the Xous target (for the custom backend symbol).
 # On hosted/linux the standard linux backend in getrandom is used instead.
@@ -66,6 +67,20 @@ getrandom = { version = "0.3", default-features = false }
 
 [features]
 default = []
+precursor = [
+    "blitstr2/precursor",
+    "graphics-server/precursor",
+    "trng/precursor",
+    "ime-plugin-shell/precursor",
+    "codec/precursor",
+    "com/precursor",
+    "llio/precursor",
+    "pddb/precursor",
+    "modals/precursor",
+    "tls/precursor",
+    "gam/precursor",
+    "utralib/precursor-pvt",  # selects production SVD; required by utralib build.rs
+]
 hosted = [
     # "gam/hosted" intentionally omitted — forwarding it causes an infinite
     # register_ux lend_mut loop in hosted mode, indicating an IPC format
@@ -115,9 +130,9 @@ path = "imports/getrandom-02"
 [patch.crates-io.ring]
 #path = "../ring-xous"  # for local dev only
 git="https://github.com/betrusted-io/ring-xous"
-rev="4296c2e7904898766cf7d8d589759a129794783b" # pinned to avoid breaking changes
+rev="5f86cb10bebd521a45fb3abb06995200aeda2948" # 0.17.7 — skips C build on xous target
 
-#[patch.crates-io.utralib]
-#path = "../xous-core/utralib"
+[patch.crates-io.utralib]
+path = "../xous-core/utralib"
 #[patch.crates-io.svd2utra]
 #path = "../xous-core/svd2utra"

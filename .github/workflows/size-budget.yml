@@ -1,0 +1,66 @@
+name: size-budget
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: size-budget-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TARGET: riscv32imac-unknown-xous-elf
+      BIN_NAME: sigchat
+      FEATURES: precursor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-xous
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1
+          key: budget-${{ env.TARGET }}
+          cache-on-failure: "true"
+
+      - name: Install cargo-bloat
+        run: cargo install --locked cargo-bloat
+
+      - name: Build for Xous target
+        run: |
+          cargo build --release --locked --target $TARGET \
+            --bin $BIN_NAME --features $FEATURES
+
+      - name: Run budget check
+        id: check
+        run: |
+          python3 .github/scripts/check_size_budget.py \
+            --budget .size-budget.toml \
+            --binary target/$TARGET/release/$BIN_NAME \
+            --target $TARGET \
+            --bin-name $BIN_NAME \
+            --features $FEATURES \
+            --report-md budget-report.md
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && (success() || failure())
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: size-budget
+          path: budget-report.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: size-budget-report
+          path: budget-report.md
+          retention-days: 30
