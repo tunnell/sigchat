@@ -40,7 +40,7 @@ pub struct SigChat<'a> {
     modals: Modals,
 }
 impl<'a> SigChat<'a> {
-    pub fn new(chat: &Chat) -> SigChat {
+    pub fn new(chat: &Chat) -> SigChat<'_> {
         let xns = xous_names::XousNames::new().unwrap();
         let modals = Modals::new(&xns).expect("can't connect to Modals server");
         let pddb = pddb::Pddb::new();
@@ -227,7 +227,7 @@ impl<'a> SigChat<'a> {
             Ok(account) => {
                 let mut manager = Manager::new(account, TrustMode::OnFirstUse);
                 let name = self.name_modal(
-                    DEFAULT_DEVICE_NAME,
+                    "xous",
                     t!("sigchat.account.link.name", locales::LANG),
                 );
                 self.chat
