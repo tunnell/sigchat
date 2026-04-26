@@ -107,7 +107,13 @@ jobs:
           cache-on-failure: "true"
 
       - name: Build for i686 (32-bit, catches usize/pointer-width bugs)
+        env:
+          # sha2-asm uses R_386_32 absolute relocations incompatible with PIE
+          # (Rust's default relocation model on Linux). Static relocation model
+          # bypasses this for the sanity build; size is not measured here.
+          RUSTFLAGS: "-C relocation-model=static"
         run: |
           cargo build --release \
             --target i686-unknown-linux-gnu \
-            --bin sigchat
+            --bin sigchat \
+            --features hosted
