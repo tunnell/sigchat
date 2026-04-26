@@ -1,0 +1,49 @@
+[meta]
+schema_version = 1
+artifact = "target/riscv32imac-unknown-xous-elf/release/sigchat"
+last_updated = 2026-04-26
+note = "Initial measurement at 3.977 MiB LOAD VM. Goal is 1.500 MiB. Per-crate caps at measured+10% (sigchat +25%) to catch regressions while reductions land."
+
+[budget.total]
+hard = 1572864       # 1.5 MiB — Baosor working-set ceiling per bunnie
+soft_warn = 1415577  # 90% of hard
+# Measured: 4170588 bytes (3.977 MiB) — 265% of hard. Roadmap: replace libcrux_ml_kem,
+# drop rustls (use xous-core tls), strip eh_frame with panic_immediate_abort.
+
+[budget.sections]
+".text"   = { hard = 3023377 }  # measured=2748524
+".rodata" = { hard = 755059  }  # measured=686417
+".data"   = { hard = 4890    }  # measured=4445
+".bss"    = { hard = 731     }  # measured=664
+
+[budget.crates.libcrux_ml_kem]
+hard = 354816
+# measured=322560 — largest contributor; target for RustCrypto ml-kem replacement
+
+[budget.crates.sigchat]
+hard = 396800
+# measured=317440 — own app code; 25% headroom (fastest-growing)
+
+[budget.crates.std]
+hard = 343552
+# measured=312320
+
+[budget.crates.rustls]
+hard = 288359
+# measured=262144 — second TLS stack alongside xous-core tls; prime reduction target
+
+[budget.crates.spqr]
+hard = 199373
+# measured=181248 — SPQR post-quantum ratchet; tied to libsignal
+
+[budget.crates.ring]
+hard = 195994
+# measured=178176
+
+[budget.crates.libsignal_protocol]
+hard = 161076
+# measured=146432
+
+[budget.crates.ureq]
+hard = 154317
+# measured=140288
