@@ -653,6 +653,16 @@ fn deliver_data_message(dm: DataMessageProto, author: &str, server_ts: u64, chat
     let ts = dm.timestamp.unwrap_or(server_ts);
     chat::cf_post_add(chat_cid, author, ts, &body);
     log::info!("main_ws: delivered {} chars from {author}", body.len());
+    // Test-only structured trace: when SIGCHAT_DEBUG_RECV=1 is set in the
+    // environment, emit a log line that recv-verify.sh can grep for to
+    // confirm a specific marker arrived. Disabled by default to keep
+    // message bodies out of production logs.
+    if std::env::var("SIGCHAT_DEBUG_RECV").as_deref() == Ok("1") {
+        log::info!(
+            "[recv-debug] kind=data author={} ts={} body_len={} body={:?}",
+            author, ts, body.len(), body
+        );
+    }
     true
 }
 
@@ -682,6 +692,12 @@ fn deliver_sync_message(sync: SyncMessageProto, server_ts: u64, chat_cid: CID) -
     let author = format!("\u{2192}{}", &dest[..dest.len().min(8)]);
     chat::cf_post_add(chat_cid, &author, ts, &body);
     log::info!("main_ws: delivered {} chars (sync-sent to {})", body.len(), dest);
+    if std::env::var("SIGCHAT_DEBUG_RECV").as_deref() == Ok("1") {
+        log::info!(
+            "[recv-debug] kind=sync_sent dest={} ts={} body_len={} body={:?}",
+            dest, ts, body.len(), body
+        );
+    }
     true
 }
 
@@ -690,5 +706,152 @@ fn is_timeout(e: &tungstenite::Error) -> bool {
         matches!(io_err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // strip_signal_padding implements the receive-side counterpart of
+    // Signal's ISO-7816-4-style padding: a `0x80` marker byte followed by
+    // `0x00` zero fill to the next multiple of 160 bytes. The receiver
+    // pops trailing zeros, then the lone marker, leaving the original
+    // plaintext.
+
+    #[test]
+    fn strip_returns_plaintext_unchanged_when_no_padding() {
+        let plain = b"hello".to_vec();
+        assert_eq!(strip_signal_padding(plain.clone()), plain);
+    }
+
+    #[test]
+    fn strip_removes_trailing_zeros_then_marker() {
+        let mut padded = b"hi".to_vec();
+        padded.push(0x80);
+        padded.extend(std::iter::repeat(0x00).take(157));
+        assert_eq!(padded.len(), 160);
+        assert_eq!(strip_signal_padding(padded), b"hi");
+    }
+
+    #[test]
+    fn strip_handles_marker_at_end_with_no_zero_fill() {
+        // Pathological but legal: marker is the last byte of a length
+        // already aligned to 160 minus one (no zero fill needed).
+        let mut padded = b"x".to_vec();
+        padded.push(0x80);
+        assert_eq!(strip_signal_padding(padded), b"x");
+    }
+
+    #[test]
+    fn strip_does_not_eat_payload_zeros() {
+        // strip_signal_padding scans backwards: it pops zeros, then ONE
+        // marker. Zeros internal to a padded message are not affected
+        // because the algorithm stops at the first non-zero from the
+        // tail.
+        let mut padded = b"a\x00b".to_vec();
+        padded.push(0x80);
+        padded.extend(std::iter::repeat(0x00).take(156));
+        assert_eq!(padded.len(), 160);
+        assert_eq!(strip_signal_padding(padded), b"a\x00b");
+    }
+
+    #[test]
+    fn strip_is_idempotent_on_already_stripped_input() {
+        let plain = b"already clean".to_vec();
+        let once = strip_signal_padding(plain.clone());
+        let twice = strip_signal_padding(once.clone());
+        assert_eq!(plain, twice);
+    }
+
+    #[test]
+    fn strip_handles_empty_input() {
+        assert!(strip_signal_padding(Vec::new()).is_empty());
+    }
+
+    // is_timeout maps tungstenite's IO error variants to a boolean used
+    // by run_session to keep the WS read loop alive across short reads.
+    // WouldBlock and TimedOut should both be treated as "no data right
+    // now" (return true).
+
+    #[test]
+    fn is_timeout_recognises_would_block() {
+        let err = tungstenite::Error::Io(io::Error::new(io::ErrorKind::WouldBlock, "x"));
+        assert!(is_timeout(&err));
+    }
+
+    #[test]
+    fn is_timeout_recognises_timed_out() {
+        let err = tungstenite::Error::Io(io::Error::new(io::ErrorKind::TimedOut, "x"));
+        assert!(is_timeout(&err));
+    }
+
+    #[test]
+    fn is_timeout_does_not_treat_unexpected_eof_as_timeout() {
+        let err = tungstenite::Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "x"));
+        assert!(!is_timeout(&err));
+    }
+
+    #[test]
+    fn is_timeout_does_not_treat_protocol_error_as_timeout() {
+        let err = tungstenite::Error::Protocol(
+            tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+        );
+        assert!(!is_timeout(&err));
+    }
+
+    // ContentProto / DataMessageProto / SyncMessageProto field-tag
+    // round-trip tests. These are intentionally self-consistent (encode
+    // + decode in our own code) — they catch regressions where someone
+    // changes one tag in the prost annotation and forgets the symmetric
+    // change. For canonical-tag conformance against real Signal-Server
+    // wire bytes (the v6 bug class), see tools/decode-wire.sh.
+
+    #[test]
+    fn content_data_message_round_trips_body_and_timestamp() {
+        let dm = DataMessageProto {
+            body: Some("hello".to_string()),
+            timestamp: Some(1_700_000_000_000),
+        };
+        let content = ContentProto {
+            data_message: Some(dm),
+            sync_message: None,
+        };
+        let mut bytes = Vec::new();
+        content.encode(&mut bytes).expect("encode");
+        let decoded = ContentProto::decode(bytes.as_slice()).expect("decode");
+        let dm = decoded.data_message.expect("data_message present");
+        assert_eq!(dm.body.as_deref(), Some("hello"));
+        assert_eq!(dm.timestamp, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn content_sync_sent_round_trips_destination_and_inner_message() {
+        let inner_dm = DataMessageProto {
+            body: Some("sync body".to_string()),
+            timestamp: Some(1_700_000_000_000),
+        };
+        let sent = SentMessageProto {
+            destination_service_id: Some("uuid-1234".to_string()),
+            timestamp: Some(1_700_000_000_000),
+            message: Some(inner_dm),
+        };
+        let sync = SyncMessageProto { sent: Some(sent) };
+        let content = ContentProto {
+            data_message: None,
+            sync_message: Some(sync),
+        };
+        let mut bytes = Vec::new();
+        content.encode(&mut bytes).expect("encode");
+        let decoded = ContentProto::decode(bytes.as_slice()).expect("decode");
+        let sent = decoded
+            .sync_message
+            .and_then(|s| s.sent)
+            .expect("sync.sent present");
+        assert_eq!(sent.destination_service_id.as_deref(), Some("uuid-1234"));
+        assert_eq!(sent.timestamp, Some(1_700_000_000_000));
+        let inner = sent.message.expect("inner DataMessage present");
+        assert_eq!(inner.body.as_deref(), Some("sync body"));
+        assert_eq!(inner.timestamp, Some(1_700_000_000_000));
     }
 }

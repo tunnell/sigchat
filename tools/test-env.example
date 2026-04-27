@@ -1,0 +1,47 @@
+# Test environment configuration for sigchat.
+#
+# Copy this file to tools/.env and fill in your values:
+#     cp tools/test-env.example tools/.env
+#     $EDITOR tools/.env
+#
+# tools/.env is gitignored. Never commit your real account values.
+#
+# Placeholder values use the US fictional number range (+1-555-01XX)
+# and the all-zero UUID, both reserved for documentation. Replace with
+# your own test accounts before running scripts that send real
+# messages.
+
+# Account that sigchat (running on the Precursor emulator) is linked
+# to as a secondary device. Receive tests drive an EXTERNAL signal-cli
+# account to send to this one's username; send tests drive sigchat
+# to send out from this one. E.164 with leading +.
+export SIGCHAT_LINKED_NUMBER="+15550100"
+
+# Signal username (handle) configured on the sigchat-linked account.
+# signal-cli accepts this via `--username` for send. The default
+# matches PrecursorEmulator.02 conventionally used by signal-send.sh.
+export SIGCHAT_LINKED_USERNAME="PrecursorEmulator.02"
+
+# External signal-cli account (NOT the sigchat-linked one) used to
+# inject inbound traffic for receive tests. signal-send.sh sources
+# this via the SIGNAL_SENDER env var. Leave unset to let signal-send.sh
+# auto-detect when only one account is registered with signal-cli.
+# export SIGNAL_SENDER="+15550101"
+
+# Recipient for outbound send tests. If set, scan-send.sh will send
+# to this username/number; if unset, the default outgoing peer in
+# sigchat's PDDB is used.
+# export SIGCHAT_SEND_TO="+15550101"
+
+# Path to xous-core checkout. Required for builds via cargo xtask.
+# Defaults to ../xous-core if unset.
+# export XOUS_CORE_PATH="../xous-core"
+
+# Pddb image used for hosted-mode scans. Should be a snapshot of a
+# linked sigchat account. Defaults to
+# $XOUS_CORE_PATH/tools/pddb-images/hosted-linked-display-verified.bin.
+# export SIGCHAT_PDDB_IMAGE=""
+
+# X11 display where the Xous emulator window appears during hosted
+# scans. Defaults to :10 to match the existing scan harness.
+# export DISPLAY=":10"

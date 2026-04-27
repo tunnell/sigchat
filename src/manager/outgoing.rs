@@ -137,8 +137,16 @@ where
     let content = ContentProto { data_message: Some(dm) };
     let mut content_bytes = content.encode_to_vec();
 
+    // Test-only wire-byte capture: when XSCDEBUG_DUMP=1 is set, append
+    // the unpadded Content protobuf to /tmp/sigchat-wire-dump.txt for
+    // offline verification by tools/decode-wire.sh against canonical
+    // SignalService.proto field tags. Disabled by default so production
+    // logs don't carry plaintext.
+    xsc_dump(timestamp_ms, "Content protobuf (DataMessage, pre-encrypt, pre-pad)", &content_bytes);
+
     // (2) Pad
     signal_pad(&mut content_bytes);
+    xsc_dump(timestamp_ms, "Padded plaintext (DataMessage, post-pad, pre-encrypt)", &content_bytes);
 
     // (3) Look up dest_registration_id from the session record.
     let session_record = block_on(session_store.load_session(recipient_addr))
@@ -176,6 +184,14 @@ where
         }
     };
 
+    let _ = recipient_addr.device_id();
+    xsc_dump(
+        timestamp_ms,
+        &format!("Ciphertext (envelope type={}) for {}/{}", ciphertext_type,
+            recipient_addr.name(), u32::from(recipient_addr.device_id())),
+        &ciphertext_bytes,
+    );
+
     Ok(EncryptedMessage {
         ciphertext_bytes,
         ciphertext_type,
@@ -183,6 +199,31 @@ where
         destination_registration_id: dest_reg_id,
         timestamp_ms,
     })
+}
+
+/// Test-only wire-byte capture, enabled by `XSCDEBUG_DUMP=1`. Appends
+/// a labelled hex line to `/tmp/sigchat-wire-dump.txt`. Stays in the
+/// codebase (rather than as an uncommitted patch) so wire-byte audits
+/// don't pay the cost of re-adding the instrumentation each time.
+/// See `tests/README.md` methodology principle 5.
+fn xsc_dump(timestamp_ms: u64, label: &str, bytes: &[u8]) {
+    if std::env::var("XSCDEBUG_DUMP").is_err() {
+        return;
+    }
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(hex, "{:02x}", b);
+    }
+    let line = format!("[{}] {} (len={}): {}\n", timestamp_ms, label, bytes.len(), hex);
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/sigchat-wire-dump.txt")
+        .and_then(|mut f| {
+            use std::io::Write as _;
+            f.write_all(line.as_bytes())
+        });
 }
 
 // ---- Production wrapper: opens pddb stores, reads local account ------------
